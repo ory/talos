@@ -10,7 +10,7 @@ godebug (
 replace github.com/ory/x => ./oryx
 
 require (
-	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.11-20260209202127-80ab13bee0bf.1
+	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.11-20260415201107-50325440f8f2.1
 	buf.build/go/protovalidate v1.1.3
 	github.com/XSAM/otelsql v0.41.0
 	github.com/bradleyjkemp/cupaloy/v2 v2.8.0

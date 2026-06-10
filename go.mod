@@ -14,7 +14,7 @@ require (
 	buf.build/go/protovalidate v1.2.0
 	github.com/XSAM/otelsql v0.41.0
 	github.com/bradleyjkemp/cupaloy/v2 v2.8.0
-	github.com/btcsuite/btcd/btcutil v1.1.6
+	github.com/btcsuite/btcd/btcutil v1.2.0
 	github.com/cenkalti/backoff/v4 v4.3.0
 	github.com/cockroachdb/errors v1.12.0
 	github.com/dgraph-io/ristretto/v2 v2.4.0

@@ -16,7 +16,7 @@ require (
 	github.com/bradleyjkemp/cupaloy/v2 v2.8.0
 	github.com/btcsuite/btcd/btcutil v1.1.6
 	github.com/cenkalti/backoff/v4 v4.3.0
-	github.com/cockroachdb/errors v1.12.0
+	github.com/cockroachdb/errors v1.14.0
 	github.com/dgraph-io/ristretto/v2 v2.4.0
 	github.com/go-faker/faker/v4 v4.7.0
 	github.com/gofrs/uuid v4.4.0+incompatible
@@ -160,7 +160,7 @@ require (
 	github.com/firefart/nonamedreturns v1.0.6 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/fzipp/gocyclo v0.6.0 // indirect
-	github.com/getsentry/sentry-go v0.27.0 // indirect
+	github.com/getsentry/sentry-go v0.46.0 // indirect
 	github.com/ghostiam/protogetter v0.3.20 // indirect
 	github.com/go-critic/go-critic v0.14.3 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect

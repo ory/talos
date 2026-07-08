@@ -14,6 +14,7 @@ import (
 	"github.com/ory/talos/internal/logger"
 	"github.com/ory/talos/internal/tracing"
 
+	"github.com/ory/x/corsx"
 	"github.com/ory/x/otelx"
 )
 
@@ -63,14 +64,20 @@ func CORSMiddleware(provider talosconfig.ProviderInterface) func(http.Handler) h
 				return
 			}
 
+			allowedOrigins := provider.Strings(ctx, talosconfig.KeyServeHTTPCORSAllowedOrigins)
 			c := cors.New(cors.Options{
-				AllowedOrigins:   provider.Strings(ctx, talosconfig.KeyServeHTTPCORSAllowedOrigins),
+				AllowedOrigins:   allowedOrigins,
 				AllowedMethods:   provider.Strings(ctx, talosconfig.KeyServeHTTPCORSAllowedMethods),
 				AllowedHeaders:   provider.Strings(ctx, talosconfig.KeyServeHTTPCORSAllowedHeaders),
 				ExposedHeaders:   provider.Strings(ctx, talosconfig.KeyServeHTTPCORSExposedHeaders),
 				AllowCredentials: provider.Bool(ctx, talosconfig.KeyServeHTTPCORSAllowCreds),
 				MaxAge:           provider.Int(ctx, talosconfig.KeyServeHTTPCORSMaxAge),
 				Debug:            provider.Bool(ctx, talosconfig.KeyServeHTTPCORSDebug),
+				// Enforce a DNS-label boundary on wildcard origins: rs/cors' raw
+				// matcher would let "https://*foo.com" match "https://evilfoo.com".
+				AllowOriginVaryRequestFunc: func(_ *http.Request, origin string) (bool, []string) {
+					return corsx.CheckOrigin(allowedOrigins, origin, false), nil
+				},
 			})
 
 			c.Handler(next).ServeHTTP(w, r.WithContext(ctx))

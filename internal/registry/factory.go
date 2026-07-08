@@ -78,9 +78,9 @@ func NewServiceFactory(
 	rateLimiterFactory registrytypes.RateLimiterFactory,
 	reg prometheus.Registerer,
 ) (*ServiceFactory, error) {
-	pv, err := protovalidate.New()
+	pv, err := NewWarmValidator()
 	if err != nil {
-		return nil, errors.Wrap(err, "create proto validator")
+		return nil, err
 	}
 
 	tracker := lastused.New(ctx, driver, lastused.Config{

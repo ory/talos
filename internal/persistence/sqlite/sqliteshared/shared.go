@@ -13,10 +13,10 @@ import (
 	"github.com/XSAM/otelsql"
 	"github.com/cockroachdb/errors"
 	"github.com/jmoiron/sqlx"
-	semconv "go.opentelemetry.io/otel/semconv/v1.39.0"
 
 	_ "modernc.org/sqlite" // Pure Go SQLite driver
 
+	"github.com/ory/talos/internal/dbutil"
 	"github.com/ory/talos/internal/persistence/persistmodel"
 	db "github.com/ory/talos/internal/persistence/sqlc/generated"
 	"github.com/ory/talos/internal/persistence/sqlutil"
@@ -57,18 +57,13 @@ func withForeignKeysOn(dsn string) string {
 func OpenDB(dsn string) (*sqlx.DB, error) {
 	dsn = withForeignKeysOn(dsn)
 
-	sqlDB, err := otelsql.Open("sqlite", dsn, otelsql.WithAttributes(
-		semconv.DBSystemNameSQLite,
-	), otelsql.WithSpanOptions(otelsql.SpanOptions{
-		OmitConnResetSession: true,
-		OmitConnectorConnect: true,
-	}))
+	sqlDB, err := otelsql.Open("sqlite", dsn, dbutil.TraceOptions("sqlite")...)
 	if err != nil {
 		return nil, errors.Wrap(err, "open database")
 	}
 
 	if _, err := otelsql.RegisterDBStatsMetrics(sqlDB, otelsql.WithAttributes(
-		semconv.DBSystemNameSQLite,
+		dbutil.DBSystemAttribute("sqlite"),
 	)); err != nil {
 		_ = sqlDB.Close()
 		return nil, errors.Wrap(err, "register DB stats metrics")

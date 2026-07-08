@@ -36,12 +36,7 @@ func ConnectWithRetry(ctx context.Context, driverName, dsn string, logger *slog.
 
 		// Open connection with OTEL instrumentation (does not actually connect yet)
 		var err error
-		db, err = otelsql.Open(driverName, dsn, otelsql.WithAttributes(
-			mapDriverToDBSystemAttribute(driverName),
-		), otelsql.WithSpanOptions(otelsql.SpanOptions{
-			OmitConnResetSession: true,
-			OmitConnectorConnect: true,
-		}))
+		db, err = otelsql.Open(driverName, dsn, TraceOptions(driverName)...)
 		if err != nil {
 			lastErr = errors.Wrap(err, "sql.Open failed")
 			logAttemptFailure(logger, attemptNum, attemptStart, lastErr)
@@ -51,7 +46,7 @@ func ConnectWithRetry(ctx context.Context, driverName, dsn string, logger *slog.
 		// Register DB stats with OTEL metrics
 		// Registration is intentionally not stored as db.Close() will clean up metrics
 		if _, err := otelsql.RegisterDBStatsMetrics(db, otelsql.WithAttributes(
-			mapDriverToDBSystemAttribute(driverName),
+			DBSystemAttribute(driverName),
 		)); err != nil {
 			_ = db.Close()
 			db = nil
@@ -105,9 +100,26 @@ func logAttemptFailure(logger *slog.Logger, attemptNum int, attemptStart time.Ti
 	}
 }
 
-// mapDriverToDBSystemAttribute maps SQL driver names to OpenTelemetry semantic convention database system attributes.
+// TraceOptions returns the otelsql instrumentation options shared by every
+// Talos database connection: a db.system attribute derived from the driver
+// name and span options that keep connection acquisition (connector connect)
+// visible while omitting the noisy per-query connection reset spans. New
+// connection dials emit a sql.connector.connect child span, making cold dials
+// (TCP + TLS + auth) visible in traces. Pool wait time on a saturated pool is
+// not spannable at the driver layer; otelsql.RegisterDBStatsMetrics exposes
+// wait-duration metrics for that case.
+func TraceOptions(driverName string) []otelsql.Option {
+	return []otelsql.Option{
+		otelsql.WithAttributes(DBSystemAttribute(driverName)),
+		otelsql.WithSpanOptions(otelsql.SpanOptions{
+			OmitConnResetSession: true,
+		}),
+	}
+}
+
+// DBSystemAttribute maps SQL driver names to OpenTelemetry semantic convention database system attributes.
 // Used for consistent tracing and metrics labeling across database operations.
-func mapDriverToDBSystemAttribute(driverName string) attribute.KeyValue {
+func DBSystemAttribute(driverName string) attribute.KeyValue {
 	switch driverName {
 	case "sqlite", "sqlite3":
 		return semconv.DBSystemNameSQLite

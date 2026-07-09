@@ -896,6 +896,39 @@ func TestVerifyMacaroonWithSecrets_PrefixSubstringAttack(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestVerifyMacaroonWithSecrets_MissingPrefixRejected asserts that a token
+// carrying no allowed prefix is rejected explicitly by the allow-list check,
+// rather than leaning on the downstream base64 decode to fail.
+func TestVerifyMacaroonWithSecrets_MissingPrefixRejected(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	signer, err := NewMacaroonSigner(testHMACSecret(), "https://test.example.com", "mc")
+	require.NoError(t, err)
+	token, err := signer.Sign(ctx, &Claims{
+		tokenID: "tok1", subject: "user1", issuer: "https://test.example.com",
+		expiresAt: time.Now().Add(1 * time.Hour),
+		tokenType: TokenTypeDerived, keyID: "key1", actorID: "user1",
+	})
+	require.NoError(t, err)
+
+	secrets := [][]byte{testHMACSecret()}
+
+	// Baseline: the token verifies with its own prefix.
+	verified, err := VerifyMacaroonWithSecrets(ctx, token, secrets, []string{testIssuer}, []string{"mc"}, testClockSkew)
+	require.NoError(t, err)
+	assert.Equal(t, "user1", verified.subject)
+
+	// Strip the prefix so the raw string carries no allowed prefix. It must be
+	// rejected by the explicit allow-list check, not the base64 decode.
+	stripped := strings.TrimPrefix(token, "mc_v1_")
+	require.NotEqual(t, token, stripped, "prefix must have been present to strip")
+
+	_, err = VerifyMacaroonWithSecrets(ctx, stripped, secrets, []string{testIssuer}, []string{"mc"}, testClockSkew)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "allowed prefix")
+}
+
 // TestVerifyMacaroonWithSecrets_NoJWTKeyMaterial documents the core invariant
 // of this design: macaroon verification uses only the shared HMAC secret.
 // A verifier that lacks access to any JWT signing key can still verify a

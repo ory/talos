@@ -123,13 +123,20 @@ func VerifyMacaroonWithSecrets(ctx context.Context, tokenString string, hmacSecr
 		return nil, errors.New("no HMAC secrets configured for macaroon verification")
 	}
 
-	// Strip the first matching prefix.
+	// Strip the first matching prefix. Reject tokens that match no allowed
+	// prefix explicitly, rather than relying on the downstream base64 decode
+	// to fail.
+	matched := false
 	for _, p := range allowedPrefixes {
 		pfx := p + "_v1_"
 		if after, ok := strings.CutPrefix(tokenString, pfx); ok {
 			tokenString = after
+			matched = true
 			break
 		}
+	}
+	if !matched {
+		return nil, errors.New("macaroon token does not carry an allowed prefix")
 	}
 
 	decoded, err := base64.RawURLEncoding.DecodeString(tokenString)

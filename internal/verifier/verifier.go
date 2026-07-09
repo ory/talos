@@ -200,11 +200,8 @@ func validateKeyStatusAndExpiration(status int32, expiresAt *time.Time) error {
 // authenticateIssuedKey validates an issued API key and returns the DB record.
 // Performs: parse, timestamp validation, prefix validation, checksum verification, DB lookup, status validation.
 // Does NOT: update last_used, cache operations, emit events, record metrics.
-func (v *Verifier) authenticateIssuedKey(ctx context.Context, fullKey, keyID string) (_ *db.IssuedApiKey, err error) {
-	ctx, span := tracing.Start(
-		ctx, "verifier.authenticateIssuedKey",
-		attribute.String("key_id", keyID),
-	)
+func (v *Verifier) authenticateIssuedKey(ctx context.Context, fullKey string) (_ *db.IssuedApiKey, err error) {
+	ctx, span := tracing.Start(ctx, "verifier.authenticateIssuedKey")
 	defer otelx.End(span, &err)
 
 	// Verify checksum (also parses the key into components, eliminating double parsing)
@@ -221,6 +218,7 @@ func (v *Verifier) authenticateIssuedKey(ctx context.Context, fullKey, keyID str
 		return nil, errors.WithStack(errdef.ErrAPIKeyNotFound().WithReason("invalid API key checksum").WithWrap(err))
 	}
 	span.SetAttributes(
+		attribute.String("key_id", components.KeyID),
 		attribute.Bool("checksum_valid", true),
 		attribute.String("prefix", components.TokenPrefix),
 		attribute.Int64("timestamp", components.Timestamp),
@@ -245,8 +243,8 @@ func (v *Verifier) authenticateIssuedKey(ctx context.Context, fullKey, keyID str
 	}
 	span.SetAttributes(attribute.Bool("prefix_allowed", true))
 
-	// DB lookup
-	dbKey, err := v.driver.GetIssuedAPIKey(ctx, keyID)
+	// DB lookup using the checksum-verified key_id.
+	dbKey, err := v.driver.GetIssuedAPIKey(ctx, components.KeyID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			span.SetAttributes(attribute.Bool("found_in_db", false))
@@ -410,10 +408,11 @@ func (v *Verifier) cacheLookupKey(ctx context.Context, route crypto.CredentialRo
 		if err != nil {
 			return "", false
 		}
-		if _, err := crypto.VerifyAPIKeyChecksum(credential, hmacSecrets); err != nil {
+		components, err := crypto.VerifyAPIKeyChecksum(credential, hmacSecrets)
+		if err != nil {
 			return "", false
 		}
-		return route.LookupKey, true // UUID key_id parsed from the public identifier.
+		return components.KeyID, true // Checksum-verified key_id, matching cache.Set(dbKey.KeyID).
 	case crypto.CredentialTypeImported:
 		return crypto.HashImportedAPIKey(credential, contextx.NetworkIDFromContext(ctx).String()), true
 	case crypto.CredentialTypeDerivedJWT, crypto.CredentialTypeDerivedMacaroon:
@@ -450,12 +449,6 @@ func (v *Verifier) VerifyAPIKey(ctx context.Context, credential string) (_ *db.I
 	// revoked tokens to appear valid until the cache entry expires.
 	isDerived := route.Type == crypto.CredentialTypeDerivedJWT || route.Type == crypto.CredentialTypeDerivedMacaroon
 
-	// lookupID is the cache key for this credential — the key_id, not the raw
-	// secret — so admin and self-revoke paths can invalidate by key_id.
-	// cacheable is false for credential types that are not cached
-	// (derived/unknown) or whose secret proof failed.
-	lookupID, cacheable := v.cacheLookupKey(ctx, route, credential)
-
 	// cache.enabled is read per request so the flag is hot-reloadable and
 	// tenant-configurable. Disabled caching reports SKIP and never reads or
 	// writes the cache, so revocations take effect immediately.
@@ -469,7 +462,20 @@ func (v *Verifier) VerifyAPIKey(ctx context.Context, credential string) (_ *db.I
 	case !cacheEnabled:
 		dbCacheStatus = cachecontrol.CacheSkip
 		span.SetAttributes(attribute.String("cache_bypass", "disabled"))
-	case cacheable && !cachecontrol.ShouldBypassCache(ctx):
+	case cachecontrol.ShouldBypassCache(ctx):
+		dbCacheStatus = cachecontrol.CacheSkip
+		span.SetAttributes(attribute.String("cache_bypass", "no-cache"))
+	default:
+		// Only now is the cache actually consulted, so authenticate the raw
+		// credential to derive its lookup key (the key_id, not the raw secret)
+		// — this work is skipped on every bypass path above. cacheable is false
+		// for credential types that are not cached or whose secret proof failed.
+		lookupID, cacheable := v.cacheLookupKey(ctx, route, credential)
+		if !cacheable {
+			dbCacheStatus = cachecontrol.CacheSkip
+			span.SetAttributes(attribute.String("cache_bypass", "no-cache"))
+			break
+		}
 		// cacheLookupKey already proved possession of the secret (checksum for
 		// issued keys, whole-key hash for imported keys), so a hit can be served
 		// without a second check.
@@ -492,9 +498,6 @@ func (v *Verifier) VerifyAPIKey(ctx context.Context, credential string) (_ *db.I
 			v.metrics.RecordVerification(string(route.Type), true, true, time.Since(startTime).Seconds())
 			return &cachedKey, cachecontrol.CacheHit, nil
 		}
-	default:
-		span.SetAttributes(attribute.String("cache_bypass", "no-cache"))
-		dbCacheStatus = cachecontrol.CacheSkip
 	}
 	span.SetAttributes(attribute.Bool("cache_hit", false))
 
@@ -502,10 +505,10 @@ func (v *Verifier) VerifyAPIKey(ctx context.Context, credential string) (_ *db.I
 
 	switch route.Type {
 	case crypto.CredentialTypeIssued:
-		dbKey, err = v.verifyAPIKey(ctx, credential, route.LookupKey)
+		dbKey, err = v.verifyAPIKey(ctx, credential)
 
 	case crypto.CredentialTypeImported:
-		dbKey, err = v.verifyImportedAPIKey(ctx, credential, route.LookupKey)
+		dbKey, err = v.verifyImportedAPIKey(ctx, credential)
 
 	case crypto.CredentialTypeDerivedJWT:
 		dbKey, err = v.verifyDerivedJWT(ctx, credential)
@@ -556,15 +559,12 @@ func (v *Verifier) VerifyAPIKey(ctx context.Context, credential string) (_ *db.I
 
 // verifyAPIKey verifies a generated API key using allowlist approach.
 // Returns the db.IssuedApiKey and any error.
-func (v *Verifier) verifyAPIKey(ctx context.Context, fullKey, keyID string) (_ *db.IssuedApiKey, err error) {
-	ctx, span := tracing.Start(
-		ctx, "verifier.verifyAPIKey",
-		attribute.String("key_id", keyID),
-	)
+func (v *Verifier) verifyAPIKey(ctx context.Context, fullKey string) (_ *db.IssuedApiKey, err error) {
+	ctx, span := tracing.Start(ctx, "verifier.verifyAPIKey")
 	defer otelx.End(span, &err)
 
 	// Authenticate and validate the key
-	dbKey, err := v.authenticateIssuedKey(ctx, fullKey, keyID)
+	dbKey, err := v.authenticateIssuedKey(ctx, fullKey)
 	if err != nil {
 		return nil, err
 	}
@@ -580,7 +580,7 @@ func (v *Verifier) verifyAPIKey(ctx context.Context, fullKey, keyID string) (_ *
 
 // verifyImportedAPIKey verifies an imported API key using hash lookup.
 // Returns the db.IssuedApiKey and any error.
-func (v *Verifier) verifyImportedAPIKey(ctx context.Context, credential, _ string) (_ *db.IssuedApiKey, err error) {
+func (v *Verifier) verifyImportedAPIKey(ctx context.Context, credential string) (_ *db.IssuedApiKey, err error) {
 	ctx, span := tracing.Start(ctx, "verifier.verifyImportedAPIKey")
 	defer otelx.End(span, &err)
 
@@ -811,7 +811,7 @@ func (v *Verifier) SelfRevokeAPIKey(ctx context.Context, credential string, reas
 
 	switch route.Type {
 	case crypto.CredentialTypeIssued:
-		return v.selfRevokeIssuedKey(ctx, credential, route.LookupKey, reason)
+		return v.selfRevokeIssuedKey(ctx, credential, reason)
 	case crypto.CredentialTypeImported:
 		return v.selfRevokeImportedKey(ctx, credential, reason)
 	case crypto.CredentialTypeDerivedJWT, crypto.CredentialTypeDerivedMacaroon:
@@ -853,16 +853,15 @@ func (v *Verifier) completeSelfRevocation(ctx context.Context, span trace.Span, 
 }
 
 // selfRevokeIssuedKey handles self-revocation for issued API keys.
-func (v *Verifier) selfRevokeIssuedKey(ctx context.Context, fullKey, keyID string, reason int32) (err error) {
+func (v *Verifier) selfRevokeIssuedKey(ctx context.Context, fullKey string, reason int32) (err error) {
 	ctx, span := tracing.Start(
 		ctx, "verifier.selfRevokeIssuedKey",
-		attribute.String("key_id", keyID),
 		attribute.Int("revocation_reason", int(reason)),
 	)
 	defer otelx.End(span, &err)
 
 	// Authenticate and validate the key
-	apiKey, err := v.authenticateIssuedKey(ctx, fullKey, keyID)
+	apiKey, err := v.authenticateIssuedKey(ctx, fullKey)
 	if err != nil {
 		if errors.Is(err, errdef.ErrAPIKeyRevoked()) {
 			// Idempotent: already revoked is success
@@ -870,6 +869,10 @@ func (v *Verifier) selfRevokeIssuedKey(ctx context.Context, fullKey, keyID strin
 		}
 		return err
 	}
+
+	// Use the DB-confirmed key_id for the revocation and cache invalidation.
+	keyID := apiKey.KeyID
+	span.SetAttributes(attribute.String("key_id", keyID))
 
 	// Calculate new expiration: max(now + 30 days, original_expires_at)
 	now := sqlutil.UTCNow()
@@ -1005,7 +1008,7 @@ func (v *Verifier) BatchVerifyAPIKeys(ctx context.Context, credentials []string)
 				continue
 			}
 
-			issuedEntries = append(issuedEntries, issuedEntry{idx: i, keyID: route.LookupKey})
+			issuedEntries = append(issuedEntries, issuedEntry{idx: i, keyID: components.KeyID})
 		}
 	}
 

@@ -84,15 +84,6 @@ func TestRouteAPIKey(t *testing.T) {
 			route := RouteCredential(tt.key, nil)
 
 			assert.Equal(t, tt.expectedType, route.Type, "credential type mismatch")
-
-			if tt.expectedType == CredentialTypeIssued {
-				// LookupKey should now be UUID format (36 chars)
-				assert.Len(t, route.LookupKey, 36, "lookup key should be UUID format (36 chars)")
-			} else {
-				// Imported keys have empty LookupKey; the verifier computes
-				// a tenant-scoped hash via HashImportedAPIKey at verification time.
-				assert.Empty(t, route.LookupKey, "imported route LookupKey should be empty")
-			}
 		})
 	}
 }
@@ -220,11 +211,14 @@ func TestRouteCredential_WithGeneratedKey(t *testing.T) {
 		route := RouteCredential(apiKey, []string{"mc"})
 
 		t.Logf("Route type: %s", route.Type)
-		t.Logf("Lookup key: %s", route.LookupKey)
 
-		// Should be routed as API key, not imported
+		// Should be routed as API key, not imported.
 		assert.Equal(t, CredentialTypeIssued, route.Type, "Key should be routed as API key")
-		assert.Equal(t, keyID, route.LookupKey, "Lookup key should match key ID")
+
+		// The checksum-verified key_id must equal the generated key ID.
+		verified, err := VerifyAPIKeyChecksum(apiKey, [][]byte{hmacSecret})
+		require.NoError(t, err)
+		assert.Equal(t, keyID, verified.KeyID, "checksum-verified key_id should match generated key ID")
 	})
 
 	t.Run("generated key with different prefixes", func(t *testing.T) {
@@ -241,7 +235,12 @@ func TestRouteCredential_WithGeneratedKey(t *testing.T) {
 				route := RouteCredential(apiKey, []string{"mc"})
 
 				assert.Equal(t, CredentialTypeIssued, route.Type, "Key with prefix '%s' should be routed as API key", prefix)
-				assert.Equal(t, keyID, route.LookupKey)
+
+				// The checksum-verified key_id must equal the generated key ID for
+				// every allowed prefix.
+				verified, err := VerifyAPIKeyChecksum(apiKey, [][]byte{hmacSecret})
+				require.NoError(t, err)
+				assert.Equal(t, keyID, verified.KeyID)
 			})
 		}
 	})
@@ -286,7 +285,6 @@ func TestRouteCredential_EdgeCases(t *testing.T) {
 				route := RouteCredential(tc.key, []string{"mc"})
 				t.Logf("Key: %s", tc.key)
 				t.Logf("Routed as: %s", route.Type)
-				t.Logf("Lookup key: %s", route.LookupKey)
 
 				// Document current behavior (see Notes in test cases above)
 				assert.Equal(t, tc.wantType, route.Type,

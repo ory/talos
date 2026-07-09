@@ -749,6 +749,41 @@ func TestVerifyAPIKey_CacheHitRequiresValidChecksum(t *testing.T) {
 	assert.True(t, errors.Is(err, errdef.ErrAPIKeyNotFound()), "forged checksum must not be served from cache")
 }
 
+// TestVerifyAPIKey_LookupUsesChecksumVerifiedKeyID checks if the
+// UUID used for the DB and cache lookup of an issued key must be
+// the checksum-verified key_id
+// (crypto.VerifyAPIKeyChecksum) — the same value the key is authenticated
+// against — not an independently routing-decoded UUID.
+func TestVerifyAPIKey_LookupUsesChecksumVerifiedKeyID(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	const hmacSecret = "test-hmac-secret-for-lookup-uuid-32chars1"
+	testCacheInst := newTestCache()
+	env := newTestVerifierWithCache(ctx, t, testCacheInst)
+	configureProviderForAPIKeys(ctx, t, env.provider, hmacSecret)
+
+	fullKey, keyID := mustGenerateAndCreateAPIKey(ctx, t, env.driver, hmacSecret, "lookup-uuid", "owner-1", []string{"read"})
+
+	// The checksum-verified key_id is the authenticated lookup key.
+	components, err := crypto.VerifyAPIKeyChecksum(fullKey, [][]byte{[]byte(hmacSecret)})
+	require.NoError(t, err)
+	require.Equal(t, keyID, components.KeyID)
+
+	// A valid key resolves and returns the checksum-verified key_id.
+	result, _, err := env.verifier.VerifyAPIKey(ctx, fullKey)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, components.KeyID, result.KeyID)
+
+	// The key is cached under exactly that checksum-verified key_id, so a
+	// self-revoke or admin invalidation keyed by key_id hits the same entry.
+	cached, found, err := testCacheInst.Get(ctx, components.KeyID)
+	require.NoError(t, err)
+	require.True(t, found, "issued key must be cached under its checksum-verified key_id")
+	assert.Equal(t, components.KeyID, cached.KeyID)
+}
+
 // Cache hit/miss verification: tests below use a real cache and verify behavior
 // indirectly (e.g., revoking a cached key and re-verifying). Direct hit/miss counting
 // is done via the dedicated prometheus.NewRegistry() approach in metrics unit tests.
@@ -1060,7 +1095,7 @@ func TestAuthenticateIssuedKey(t *testing.T) {
 
 		fullKey, keyID := mustGenerateAndCreateAPIKey(ctx, t, env.driver, hmacSecret, "test-key", "owner-1", []string{"read"})
 
-		result, err := env.verifier.authenticateIssuedKey(ctx, fullKey, keyID)
+		result, err := env.verifier.authenticateIssuedKey(ctx, fullKey)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		assert.Equal(t, keyID, result.KeyID)
@@ -1072,7 +1107,7 @@ func TestAuthenticateIssuedKey(t *testing.T) {
 
 		env := newTestVerifier(ctx, t)
 
-		_, err := env.verifier.authenticateIssuedKey(ctx, "invalid-format", "some-id")
+		_, err := env.verifier.authenticateIssuedKey(ctx, "invalid-format")
 		require.Error(t, err)
 		// Checksum failures are normalized to ErrAPIKeyNotFound to prevent callers
 		// from distinguishing a malformed key from a non-existent one.
@@ -1090,13 +1125,13 @@ func TestAuthenticateIssuedKey(t *testing.T) {
 		configureProviderForAPIKeys(ctx, t, env.provider, hmacSecret)
 
 		// Generate a key with one secret
-		fullKey, keyID, err := crypto.GenerateAPIKey(ctx, prefix, []byte(hmacSecret))
+		fullKey, _, err := crypto.GenerateAPIKey(ctx, prefix, []byte(hmacSecret))
 		require.NoError(t, err)
 
 		// But verify with a different secret (checksum mismatch)
 		require.NoError(t, env.provider.Set(ctx, config.KeySecretsHMACCurrent, "different-secret-32chars-long-12"))
 
-		_, err = env.verifier.authenticateIssuedKey(ctx, fullKey, keyID)
+		_, err = env.verifier.authenticateIssuedKey(ctx, fullKey)
 		require.Error(t, err)
 		// Checksum failures are normalized to ErrAPIKeyNotFound to prevent callers
 		// from distinguishing a wrong-project key (bad HMAC) from a non-existent one.
@@ -1120,7 +1155,7 @@ func TestAuthenticateIssuedKey(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		_, err = env.verifier.authenticateIssuedKey(ctx, fullKey, keyID)
+		_, err = env.verifier.authenticateIssuedKey(ctx, fullKey)
 		require.Error(t, err)
 		assert.True(t, errors.Is(err, errdef.ErrAPIKeyRevoked()))
 	})
@@ -1150,7 +1185,7 @@ func TestAuthenticateIssuedKey(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		_, err = env.verifier.authenticateIssuedKey(ctx, fullKey, keyID)
+		_, err = env.verifier.authenticateIssuedKey(ctx, fullKey)
 		require.Error(t, err)
 		assert.True(t, errors.Is(err, errdef.ErrAPIKeyExpired()))
 	})
@@ -1166,10 +1201,10 @@ func TestAuthenticateIssuedKey(t *testing.T) {
 		configureProviderForAPIKeys(ctx, t, env.provider, hmacSecret)
 
 		// Generate a key but don't create it in DB
-		fullKey, keyID, err := crypto.GenerateAPIKey(ctx, prefix, []byte(hmacSecret))
+		fullKey, _, err := crypto.GenerateAPIKey(ctx, prefix, []byte(hmacSecret))
 		require.NoError(t, err)
 
-		_, err = env.verifier.authenticateIssuedKey(ctx, fullKey, keyID)
+		_, err = env.verifier.authenticateIssuedKey(ctx, fullKey)
 		require.Error(t, err)
 		assert.True(t, errors.Is(err, errdef.ErrAPIKeyNotFound()))
 	})

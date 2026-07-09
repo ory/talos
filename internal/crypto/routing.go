@@ -24,8 +24,7 @@ const (
 
 // CredentialRoute contains routing information for a credential
 type CredentialRoute struct {
-	Type      CredentialType
-	LookupKey string // What to use for DB/cache lookup
+	Type CredentialType
 }
 
 // RouteCredential determines how to route a credential for verification.
@@ -33,29 +32,25 @@ type CredentialRoute struct {
 // macaroonPrefixes lists the allowed macaroon token prefixes (e.g. ["mc", "auth"]).
 // A token matching any prefix+"_v1_" is routed as a derived macaroon token.
 //
-// It identifies the credential type and returns the appropriate lookup key:
-//   - API Key: Returns UUID v4 string (36 chars) for direct DB lookup
-//   - Imported: Returns empty LookupKey (verifier computes tenant-scoped hash via HashImportedAPIKey)
-//   - Session tokens: Returns empty (extract from claims during verification)
+// It classifies the credential type only; it does not surface a lookup key.
+// Callers derive the lookup key from the authenticated credential — the
+// checksum-verified key_id via crypto.VerifyAPIKeyChecksum for issued keys, or
+// crypto.HashImportedAPIKey for imported keys — so the authenticated UUID and the
+// looked-up UUID always come from the same parse.
 func RouteCredential(credential string, macaroonPrefixes []string) CredentialRoute {
 	// Derived tokens (short-lived, derived from API keys)
 
 	// Check for JWT format: <base64>.<base64>.<base64>
 	if jwtRegex.MatchString(credential) {
-		// JWT token - extract key_id from claims during verification
-		return CredentialRoute{
-			Type:      CredentialTypeDerivedJWT,
-			LookupKey: "", // Extract from claims
-		}
+		// JWT token - key_id is extracted from claims during verification.
+		return CredentialRoute{Type: CredentialTypeDerivedJWT}
 	}
 
 	// Check for macaroon prefix (any configured prefix + "_v1_")
 	for _, p := range macaroonPrefixes {
 		if strings.HasPrefix(credential, p+"_v1_") {
-			return CredentialRoute{
-				Type:      CredentialTypeDerivedMacaroon,
-				LookupKey: "", // Extract from identifier
-			}
+			// Macaroon token - key_id is extracted from the identifier during verification.
+			return CredentialRoute{Type: CredentialTypeDerivedMacaroon}
 		}
 	}
 
@@ -64,30 +59,20 @@ func RouteCredential(credential string, macaroonPrefixes []string) CredentialRou
 	// Uses the same regex as parseAPIKey for consistency
 	matches := apiKeyRegex.FindStringSubmatch(credential)
 	if matches != nil {
-		// Valid v1 API key - extract base58 identifier from capture group [2]
+		// Valid v1 API key format - classify by whether the base58 identifier
+		// (capture group [2]) decodes. A decode error means the key is not one we
+		// issued, so route it as imported. Routing only classifies the type, so
+		// the decoded UUID is discarded.
 		identifier := matches[2]
-		// Decode identifier to extract UUID for database lookup
-		_, uuidKeyID, err := DecodeIdentifier(identifier)
-		if err != nil {
-			// Invalid identifier encoding - treat as imported key
-			return CredentialRoute{
-				Type:      CredentialTypeImported,
-				LookupKey: "",
-			}
+		if _, _, err := DecodeIdentifier(identifier); err != nil {
+			return CredentialRoute{Type: CredentialTypeImported}
 		}
-		return CredentialRoute{
-			Type:      CredentialTypeIssued,
-			LookupKey: uuidKeyID, // Use UUID for DB lookup
-		}
+		return CredentialRoute{Type: CredentialTypeIssued}
 	}
 
-	// Not a valid v1 format - treat as imported key.
-	// LookupKey is empty because the verifier computes a tenant-scoped hash
-	// via HashImportedAPIKey using the NID from context.
-	return CredentialRoute{
-		Type:      CredentialTypeImported,
-		LookupKey: "",
-	}
+	// Not a valid v1 format - treat as imported key. The verifier computes a
+	// tenant-scoped hash via HashImportedAPIKey using the NID from context.
+	return CredentialRoute{Type: CredentialTypeImported}
 }
 
 // HashImportedAPIKey generates a deterministic, tenant-scoped key ID for an imported key.

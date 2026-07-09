@@ -1,6 +1,9 @@
 package boot_test
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +13,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
 	"github.com/ory/herodot"
 	"github.com/ory/x/httpx"
@@ -28,6 +33,13 @@ import (
 // to close the factory.
 func buildDeps(t *testing.T, mode boot.ServerMode) *boot.ServerDependencies {
 	t.Helper()
+	return buildDepsWithLogger(t, mode, logger.NewLogger("warn", "json"))
+}
+
+// buildDepsWithLogger is buildDeps with a caller-provided logger, so tests can
+// capture log output through a buffer-backed logger.
+func buildDepsWithLogger(t *testing.T, mode boot.ServerMode, log *logger.Logger) *boot.ServerDependencies {
+	t.Helper()
 	ctx := t.Context()
 
 	driver, err := testutil.InitDriver(t, "")
@@ -36,8 +48,6 @@ func buildDeps(t *testing.T, mode boot.ServerMode) *boot.ServerDependencies {
 	writer := herodot.NewJSONWriter(nil)
 
 	provider := testutil.NewTestProviderWithSigningKeys(t)
-
-	log := logger.NewLogger("warn", "json")
 
 	propOpts, err := commercialregistry.Options(ctx, provider, log.Logger, writer)
 	require.NoError(t, err, "initialize feature options")
@@ -239,6 +249,54 @@ func TestHTTPHandlerFromDependencies_HandlerOptions(t *testing.T) {
 		resp := get(t, ts, "/health/alive")
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 	})
+}
+
+// TestHTTPHandlerFromDependencies_RequestLogIncludesTraceID is a middleware
+// ordering regression test: the request logging middleware must run inside
+// otelhttp.NewHandler so the request log carries the span's trace ID.
+//
+// It mutates the global tracer provider, so it must not run in parallel.
+func TestHTTPHandlerFromDependencies_RequestLogIncludesTraceID(t *testing.T) {
+	var buf bytes.Buffer
+	log := logger.NewLoggerWithWriter(&buf, "info", "json")
+	deps := buildDepsWithLogger(t, boot.ModeAllInOne, log)
+
+	// otelhttp uses the global tracer provider; install a real SDK provider so
+	// spans carry valid trace IDs, and restore the previous one afterwards.
+	prev := otel.GetTracerProvider()
+	tp := sdktrace.NewTracerProvider()
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(prev)
+		_ = tp.Shutdown(context.Background())
+	})
+
+	handler, err := boot.HTTPHandlerFromDependencies(t.Context(), deps, nil)
+	require.NoError(t, err)
+
+	// Serve the request synchronously so the request log is written before we
+	// inspect the buffer.
+	req := httptest.NewRequest(http.MethodGet, "/v2alpha1/derivedKeys/jwks.json", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+
+	// Find the request completion log line and assert it carries the trace ID.
+	var entry map[string]any
+	for line := range strings.Lines(buf.String()) {
+		var candidate map[string]any
+		require.NoError(t, json.Unmarshal([]byte(line), &candidate), "log line: %s", line)
+		if candidate["msg"] == "HTTP request completed" {
+			entry = candidate
+			break
+		}
+	}
+	require.NotNil(t, entry, "no request completion log found in: %s", buf.String())
+
+	otelGroup, ok := entry["otel"].(map[string]any)
+	require.True(t, ok, "request log must contain the otel group, got: %v", entry)
+	assert.NotEmpty(t, otelGroup["trace_id"], "request log must carry the span's trace ID")
+	assert.NotEmpty(t, otelGroup["span_id"], "request log must carry the span's span ID")
 }
 
 func TestHTTPHandlerFromDependencies_PreBuiltAdapters(t *testing.T) {

@@ -107,15 +107,17 @@ func HTTPHandlerFromDependencies(ctx context.Context, deps *ServerDependencies, 
 		handler = httpserver.RequestIDMiddleware(handler)
 	}
 
-	if !opts.SkipOTEL {
-		// Start a server span for each HTTP request so trace IDs propagate to logs.
-		// Must be outermost so all inner middleware (including RequestIDMiddleware) can access the span.
-		handler = otelhttp.NewHandler(handler, "talos.http.server")
+	if !opts.SkipRequestLogging {
+		// Log each request on completion. Must run inside otelhttp so the
+		// request context already carries the span and logs get trace IDs.
+		handler = httpserver.RequestLoggingMiddleware(deps.Provider, deps.Log)(handler)
 	}
 
-	if !opts.SkipRequestLogging {
-		// Add request logging middleware (after OTEL to capture trace context)
-		handler = httpserver.RequestLoggingMiddleware(deps.Provider, deps.Log)(handler)
+	if !opts.SkipOTEL {
+		// Start a server span for each HTTP request. Must be the outermost
+		// wrapper so every inner middleware (request logging, RequestIDMiddleware)
+		// sees the span context.
+		handler = otelhttp.NewHandler(handler, "talos.http.server")
 	}
 
 	return handler, nil

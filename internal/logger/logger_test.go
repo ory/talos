@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // TestNewLogger_Levels tests logger creation with various log levels
@@ -235,7 +237,7 @@ func TestLogger_WithErrorRespectsStackTraceFlag(t *testing.T) {
 		t.Parallel()
 
 		logger, buf := makeLogger(true)
-		logger.WithError(errWithStack).logWithAttrs(context.Background(), slog.LevelError, "test")
+		logger.WithError(errWithStack).Log(context.Background(), slog.LevelError, "test")
 		assert.Contains(t, buf.String(), "stacktrace")
 	})
 
@@ -243,7 +245,7 @@ func TestLogger_WithErrorRespectsStackTraceFlag(t *testing.T) {
 		t.Parallel()
 
 		logger, buf := makeLogger(false)
-		logger.WithError(errWithStack).logWithAttrs(context.Background(), slog.LevelError, "test")
+		logger.WithError(errWithStack).Log(context.Background(), slog.LevelError, "test")
 		assert.NotContains(t, buf.String(), "stacktrace")
 	})
 }
@@ -269,7 +271,7 @@ func TestLogger_WithRequest_CorrelationHeaders(t *testing.T) {
 			},
 		}
 
-		logger.WithRequest(req).logWithAttrs(context.Background(), slog.LevelInfo, "test")
+		logger.WithRequest(req).Log(context.Background(), slog.LevelInfo, "test")
 
 		var entry map[string]any
 		require.NoError(t, json.Unmarshal(buf.Bytes(), &entry))
@@ -295,7 +297,7 @@ func TestLogger_WithRequest_CorrelationHeaders(t *testing.T) {
 			Header:     http.Header{},
 		}
 
-		logger.WithRequest(req).logWithAttrs(context.Background(), slog.LevelInfo, "test")
+		logger.WithRequest(req).Log(context.Background(), slog.LevelInfo, "test")
 
 		var entry map[string]any
 		require.NoError(t, json.Unmarshal(buf.Bytes(), &entry))
@@ -305,6 +307,74 @@ func TestLogger_WithRequest_CorrelationHeaders(t *testing.T) {
 		assert.NotContains(t, httpReq, "cf_ray_id")
 		assert.NotContains(t, httpReq, "request_id")
 	})
+}
+
+// testSpanContext returns a context carrying a valid, deterministic span context.
+// No tracer SDK is needed: trace.ContextWithSpanContext is enough for
+// trace.SpanContextFromContext to return a valid span context.
+func testSpanContext(t *testing.T) (context.Context, trace.SpanContext) {
+	t.Helper()
+
+	traceID, err := trace.TraceIDFromHex("0123456789abcdef0123456789abcdef")
+	require.NoError(t, err)
+	spanID, err := trace.SpanIDFromHex("0123456789abcdef")
+	require.NoError(t, err)
+	spanCtx := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+	})
+	return trace.ContextWithSpanContext(t.Context(), spanCtx), spanCtx
+}
+
+// TestLogger_WithContext_AttrsSurviveEmbeddedLogMethods verifies that attrs
+// accumulated via WithContext are emitted by the embedded slog log methods
+// (InfoContext etc.), not only by ReportError.
+func TestLogger_WithContext_AttrsSurviveEmbeddedLogMethods(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	log := NewLoggerWithWriter(&buf, "info", "json")
+	ctx, spanCtx := testSpanContext(t)
+
+	log.WithContext(ctx).InfoContext(ctx, "test")
+
+	var entry map[string]any
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &entry))
+
+	otelGroup, ok := entry["otel"].(map[string]any)
+	require.True(t, ok, "log entry must contain the otel group, got: %s", buf.String())
+	assert.Equal(t, spanCtx.TraceID().String(), otelGroup["trace_id"])
+	assert.Equal(t, spanCtx.SpanID().String(), otelGroup["span_id"])
+}
+
+// TestLogger_WithRequest_With_AttrsSurviveEmbeddedLogMethods verifies the
+// exact chain used by RequestLoggingMiddleware: WithRequest(r).With(...) +
+// InfoContext must emit http_request, otel, and the With attrs together.
+func TestLogger_WithRequest_With_AttrsSurviveEmbeddedLogMethods(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	log := NewLoggerWithWriter(&buf, "info", "json")
+	ctx, spanCtx := testSpanContext(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil).WithContext(ctx)
+	log.WithRequest(req).With(slog.Int("status", 200)).InfoContext(ctx, "HTTP request completed")
+
+	var entry map[string]any
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &entry))
+
+	httpReq, ok := entry["http_request"].(map[string]any)
+	require.True(t, ok, "log entry must contain the http_request group, got: %s", buf.String())
+	assert.Equal(t, http.MethodGet, httpReq["method"])
+	assert.Equal(t, "/test", httpReq["path"])
+
+	otelGroup, ok := entry["otel"].(map[string]any)
+	require.True(t, ok, "log entry must contain the otel group, got: %s", buf.String())
+	assert.Equal(t, spanCtx.TraceID().String(), otelGroup["trace_id"])
+	assert.Equal(t, spanCtx.SpanID().String(), otelGroup["span_id"])
+
+	assert.EqualValues(t, 200, entry["status"])
 }
 
 func TestRedactHeaders(t *testing.T) {

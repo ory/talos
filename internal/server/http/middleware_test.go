@@ -1,7 +1,9 @@
 package http_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/trace"
 
 	talosconfig "github.com/ory/talos/internal/config"
 	"github.com/ory/talos/internal/logger"
@@ -482,6 +485,55 @@ func TestRequestIDMiddleware_GeneratesIDWhenMissing(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	assert.NotEmpty(t, rec.Header().Get("X-Request-ID"), "a UUID must be generated when no X-Request-ID is provided")
+}
+
+func TestRequestLoggingMiddleware_EmitsTraceAndRequestMetadata(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	log := logger.NewLoggerWithWriter(&buf, "info", "json")
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("OK"))
+	})
+
+	provider := &mockProvider{disableForHealth: false}
+	wrappedHandler := httpserver.RequestLoggingMiddleware(provider, log)(handler)
+
+	// Build a valid span context without the tracer SDK; the middleware must
+	// pick it up from the request context.
+	traceID, err := trace.TraceIDFromHex("0123456789abcdef0123456789abcdef")
+	require.NoError(t, err)
+	spanID, err := trace.SpanIDFromHex("0123456789abcdef")
+	require.NoError(t, err)
+	spanCtx := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req = req.WithContext(trace.ContextWithSpanContext(req.Context(), spanCtx))
+	rec := httptest.NewRecorder()
+	wrappedHandler.ServeHTTP(rec, req)
+
+	var entry map[string]any
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &entry), "log output: %s", buf.String())
+
+	otelGroup, ok := entry["otel"].(map[string]any)
+	require.True(t, ok, "request log must contain the otel group, got: %s", buf.String())
+	assert.Equal(t, traceID.String(), otelGroup["trace_id"])
+	assert.Equal(t, spanID.String(), otelGroup["span_id"])
+
+	httpReq, ok := entry["http_request"].(map[string]any)
+	require.True(t, ok, "request log must contain the http_request group, got: %s", buf.String())
+	assert.Equal(t, http.MethodGet, httpReq["method"])
+	assert.Equal(t, "/test", httpReq["path"])
+
+	assert.EqualValues(t, http.StatusOK, entry["status"])
+	assert.EqualValues(t, 2, entry["bytes"])
+	assert.Contains(t, entry, "duration")
 }
 
 func TestRequestLoggingMiddleware_IntegrationWithMultipleWrites(t *testing.T) {

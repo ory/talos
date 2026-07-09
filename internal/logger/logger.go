@@ -4,10 +4,10 @@ package logger
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
-	"slices"
 	"strings"
 
 	"github.com/cockroachdb/errors"
@@ -20,12 +20,17 @@ import (
 type Logger struct {
 	*slog.Logger
 
-	attrs              []slog.Attr
 	includeStackTraces bool
 }
 
 // NewLogger creates a new structured logger with the specified level and format
 func NewLogger(level string, format string) *Logger {
+	return NewLoggerWithWriter(os.Stderr, level, format)
+}
+
+// NewLoggerWithWriter creates a new structured logger that writes to w.
+// Used by tests to capture log output; production code uses NewLogger.
+func NewLoggerWithWriter(w io.Writer, level string, format string) *Logger {
 	// Parse log level
 	var (
 		handler            slog.Handler
@@ -56,11 +61,11 @@ func NewLogger(level string, format string) *Logger {
 	// Create handler based on format
 	switch format {
 	case "json":
-		handler = slog.NewJSONHandler(os.Stderr, opts)
+		handler = slog.NewJSONHandler(w, opts)
 	case "text", "":
-		handler = slog.NewTextHandler(os.Stderr, opts)
+		handler = slog.NewTextHandler(w, opts)
 	default:
-		handler = slog.NewTextHandler(os.Stderr, opts)
+		handler = slog.NewTextHandler(w, opts)
 	}
 
 	// Create logger with common fields
@@ -70,7 +75,7 @@ func NewLogger(level string, format string) *Logger {
 		slog.Int("pid", os.Getpid()),
 	)
 
-	return &Logger{Logger: logger, attrs: nil, includeStackTraces: includeStackTraces}
+	return &Logger{Logger: logger, includeStackTraces: includeStackTraces}
 }
 
 // ReportError implements the herodot.ErrorReporter interface.
@@ -87,9 +92,9 @@ func (l *Logger) ReportError(r *http.Request, code int, err error, args ...any) 
 	}
 
 	if code < 500 {
-		logger.logWithAttrs(r.Context(), slog.LevelInfo, msg)
+		logger.Log(r.Context(), slog.LevelInfo, msg)
 	} else {
-		logger.logWithAttrs(r.Context(), slog.LevelError, msg)
+		logger.Log(r.Context(), slog.LevelError, msg)
 	}
 }
 
@@ -213,24 +218,14 @@ func (l *Logger) WithField(key string, value slog.Value) *Logger {
 	return l.withAttr(slog.Attr{Key: key, Value: value})
 }
 
-// withAttr returns a new Logger with an additional attribute.
+// withAttr returns a new Logger with an additional attribute. The attribute
+// is stored in the embedded slog.Logger so that every log method — including
+// the promoted slog methods like InfoContext — emits it.
 func (l *Logger) withAttr(attr slog.Attr) *Logger {
-	newAttrs := append(slices.Clone(l.attrs), attr)
 	return &Logger{
-		Logger:             l.Logger,
-		attrs:              newAttrs,
+		Logger:             l.With(attr),
 		includeStackTraces: l.includeStackTraces,
 	}
-}
-
-// logWithAttrs logs a message with accumulated attributes.
-func (l *Logger) logWithAttrs(ctx context.Context, level slog.Level, msg string) {
-	// Convert accumulated attrs to args
-	allArgs := make([]any, 0, len(l.attrs))
-	for _, attr := range l.attrs {
-		allArgs = append(allArgs, attr)
-	}
-	l.Log(ctx, level, msg, allArgs...)
 }
 
 const redactionText = "[REDACTED]"

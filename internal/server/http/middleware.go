@@ -152,7 +152,8 @@ func RequestLoggingMiddleware(provider talosconfig.ProviderInterface, log *logge
 			// Log after completion
 			duration := time.Since(start)
 
-			lg := log.WithContext(ctx).WithRequest(r).With(
+			// WithRequest also attaches the otel trace/span IDs from r.Context().
+			lg := log.WithRequest(r).With(
 				slog.Int("status", wrapped.statusCode),
 				slog.Int64("bytes", wrapped.bytesWritten),
 				slog.Duration("duration", duration),

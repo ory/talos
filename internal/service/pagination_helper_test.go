@@ -39,6 +39,10 @@ func (f *fakeConfigProvider) Strings(_ context.Context, key config.Key) []string
 	return f.lists[key]
 }
 
+func (f *fakeConfigProvider) ActiveRetiredValues(_ context.Context, key config.Key) ([]string, error) {
+	return f.lists[key], nil
+}
+
 func (f *fakeConfigProvider) Duration(_ context.Context, _ config.Key) time.Duration {
 	return 0
 }
@@ -140,7 +144,7 @@ func TestPaginationHelper_HMACRotation(t *testing.T) {
 
 	mockProvider := testutil.NewTestProvider(t, configx.WithValues(map[string]any{
 		config.KeySecretsHMACCurrent.String(): newSecret,
-		config.KeySecretsHMACRetired.String(): []string{oldSecret},
+		config.KeySecretsHMACRetired.String(): []map[string]any{{"value": oldSecret}},
 	}))
 	helper := &paginationHelper{provider: mockProvider}
 	ctx := context.WithValue(t.Context(), contextx.NIDKey{}, uuid.Nil)

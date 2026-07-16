@@ -197,6 +197,14 @@ linters:
         linters:
           - interfacebloat
 
+      # Design decision: ProviderInterface mirrors the configx provider surface
+      # (typed accessors + Unmarshal + ActiveRetiredValues) so both the OSS and
+      # commercial providers can back it and flow into the service interfaces.
+      - text: "the interface has more than 10 methods"
+        path: "internal/config/provider.go"
+        linters:
+          - interfacebloat
+
       # Intentional: Returning nil to skip invalid keys during iteration
       - text: "error is not nil.*but it returns nil"
         path: "internal/verifier/verifier.go"

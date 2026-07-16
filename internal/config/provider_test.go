@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -183,6 +184,252 @@ func TestProvider_Duration(t *testing.T) {
 	require.NoError(t, provider.Set(ctx, KeyCredentialsDerivedTokensDefaultTTL, "2h"))
 
 	assert.Equal(t, 2*time.Hour, provider.Duration(ctx, KeyCredentialsDerivedTokensDefaultTTL))
+}
+
+func TestProvider_ActiveRetiredValues(t *testing.T) {
+	t.Parallel()
+
+	future := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	past := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
+
+	// A YAML config carrying retired issuers in the new object shape: one without
+	// expiry (never expires), one with a future expiry (still active), and one
+	// already expired (dropped). Uses issuer_retired because its value has no
+	// 32-char minimum, keeping the fixture readable.
+	provider, ctx := setupProviderWithConfig(t, `
+credentials:
+  issuer: "https://test.talos.local"
+  issuer_retired:
+    - value: "https://never.example.com"
+    - value: "https://future.example.com"
+      expires_at: "`+future+`"
+    - value: "https://past.example.com"
+      expires_at: "`+past+`"
+`)
+
+	active, err := provider.ActiveRetiredValues(ctx, KeyCredentialsIssuerRetired)
+	require.NoError(t, err)
+	assert.Equal(t, []string{
+		"https://never.example.com",
+		"https://future.example.com",
+	}, active, "unset and future expiry are kept, past expiry is dropped")
+}
+
+func TestProvider_ActiveRetiredValues_Empty(t *testing.T) {
+	t.Parallel()
+
+	provider, err := createTestProvider(t)
+	require.NoError(t, err)
+
+	active, err := provider.ActiveRetiredValues(t.Context(), KeyCredentialsIssuerRetired)
+	require.NoError(t, err)
+	assert.Empty(t, active)
+}
+
+func TestProvider_ActiveRetiredValues_LegacyAndMixedShapes(t *testing.T) {
+	t.Parallel()
+
+	future := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	past := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
+
+	// Config written before retired values gained expiry stored bare strings.
+	// They must still validate and be treated as never-expiring, including when
+	// mixed with the new object shape in the same array.
+	provider, ctx := setupProviderWithConfig(t, `
+credentials:
+  issuer: "https://test.talos.local"
+  issuer_retired:
+    - "https://legacy.example.com"
+    - value: "https://future.example.com"
+      expires_at: "`+future+`"
+    - value: "https://past.example.com"
+      expires_at: "`+past+`"
+`)
+
+	active, err := provider.ActiveRetiredValues(ctx, KeyCredentialsIssuerRetired)
+	require.NoError(t, err)
+	assert.Equal(t, []string{
+		"https://legacy.example.com",
+		"https://future.example.com",
+	}, active, "legacy bare string never expires; object entries still filter on expiry")
+}
+
+func TestProvider_ActiveRetiredValues_LegacyHMACString(t *testing.T) {
+	t.Parallel()
+
+	// A retired HMAC secret persisted in the legacy bare-string form must still
+	// validate against the 32-char minimum and be accepted for verification.
+	provider, ctx := setupProviderWithConfig(t, `
+secrets:
+  hmac:
+    current: "test-hmac-secret-for-config-provider-32chars"
+    retired:
+      - "legacy-retired-hmac-secret-32-characters-long"
+`)
+
+	active, err := provider.ActiveRetiredValues(ctx, KeySecretsHMACRetired)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"legacy-retired-hmac-secret-32-characters-long"}, active)
+}
+
+// fixedRetiredUnmarshaler feeds a controlled raw slice into
+// FilterActiveRetiredValues. The schema's oneOf(string, object) constraint makes
+// the real provider reject malformed retired entries at load and on Set, so a
+// malformed entry can only reach the filter from a source that skips schema
+// validation. This seam supplies exactly that input to prove the filter degrades
+// gracefully instead of failing the whole call.
+type fixedRetiredUnmarshaler []any
+
+func (f fixedRetiredUnmarshaler) Unmarshal(_ context.Context, _ Key, value any) error {
+	out, ok := value.(*[]any)
+	if !ok {
+		return errors.Errorf("unexpected unmarshal target %T", value)
+	}
+	*out = []any(f)
+	return nil
+}
+
+func TestFilterActiveRetiredValues_SkipsMalformed(t *testing.T) {
+	t.Parallel()
+
+	future := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	past := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
+
+	raw := fixedRetiredUnmarshaler{
+		"https://legacy.example.com", // bare string, never expires
+		map[string]any{"value": "https://future.example.com", "expires_at": future},   // active
+		map[string]any{"value": "https://past.example.com", "expires_at": past},       // expired, dropped
+		map[string]any{"value": "https://bad-date.example.com", "expires_at": "nope"}, // malformed, skipped
+		42, // wrong element type, skipped
+		map[string]any{"value": "https://bad-bool.example.com", "expires_at": true}, // wrong expires_at type, skipped
+		map[string]any{"value": "https://trailing.example.com"},                     // never expires
+	}
+
+	active, err := FilterActiveRetiredValues(t.Context(), raw, KeyCredentialsIssuerRetired)
+	require.NoError(t, err, "a malformed entry must be skipped, not fail the whole key")
+	assert.Equal(t, []string{
+		"https://legacy.example.com",
+		"https://future.example.com",
+		"https://trailing.example.com",
+	}, active, "valid entries survive around the skipped and expired ones")
+}
+
+// errRetiredUnmarshaler simulates a whole-key unmarshal failure (e.g. the value
+// is not an array at all), which must still fail closed.
+type errRetiredUnmarshaler struct{}
+
+func (errRetiredUnmarshaler) Unmarshal(_ context.Context, _ Key, _ any) error {
+	return errors.New("boom")
+}
+
+func TestFilterActiveRetiredValues_WholeKeyUnmarshalFails(t *testing.T) {
+	t.Parallel()
+
+	active, err := FilterActiveRetiredValues(t.Context(), errRetiredUnmarshaler{}, KeySecretsHMACRetired)
+	require.Error(t, err, "a whole-key unmarshal failure must fail closed")
+	assert.Nil(t, active)
+}
+
+func TestIsActiveAt(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+
+	assert.True(t, isActiveAt(now, time.Time{}), "zero expiry never expires")
+	assert.True(t, isActiveAt(now, now.Add(time.Nanosecond)), "expiry just after now is still active")
+	assert.False(t, isActiveAt(now, now), "expiry exactly at now is expired (exclusive boundary)")
+	assert.False(t, isActiveAt(now, now.Add(-time.Nanosecond)), "expiry just before now is expired")
+}
+
+func TestParseRetiredValue(t *testing.T) {
+	t.Parallel()
+
+	when := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+
+	t.Run("bare string never expires", func(t *testing.T) {
+		t.Parallel()
+		value, expiresAt, err := parseRetiredValue("https://legacy.example.com")
+		require.NoError(t, err)
+		assert.Equal(t, "https://legacy.example.com", value)
+		assert.True(t, expiresAt.IsZero())
+	})
+
+	t.Run("object with expiry", func(t *testing.T) {
+		t.Parallel()
+		value, expiresAt, err := parseRetiredValue(map[string]any{
+			"value":      "https://future.example.com",
+			"expires_at": when.Format(time.RFC3339),
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "https://future.example.com", value)
+		assert.Equal(t, when, expiresAt)
+	})
+
+	t.Run("object without expiry", func(t *testing.T) {
+		t.Parallel()
+		value, expiresAt, err := parseRetiredValue(map[string]any{"value": "https://x.example.com"})
+		require.NoError(t, err)
+		assert.Equal(t, "https://x.example.com", value)
+		assert.True(t, expiresAt.IsZero())
+	})
+
+	t.Run("malformed expires_at errors", func(t *testing.T) {
+		t.Parallel()
+		_, _, err := parseRetiredValue(map[string]any{"value": "https://x.example.com", "expires_at": "not-a-date"})
+		require.Error(t, err)
+	})
+
+	t.Run("wrong element type errors", func(t *testing.T) {
+		t.Parallel()
+		_, _, err := parseRetiredValue(42)
+		require.Error(t, err)
+	})
+}
+
+func TestParseExpiresAt(t *testing.T) {
+	t.Parallel()
+
+	when := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+
+	t.Run("nil never expires", func(t *testing.T) {
+		t.Parallel()
+		got, err := parseExpiresAt(nil)
+		require.NoError(t, err)
+		assert.True(t, got.IsZero())
+	})
+
+	t.Run("empty string never expires", func(t *testing.T) {
+		t.Parallel()
+		got, err := parseExpiresAt("")
+		require.NoError(t, err)
+		assert.True(t, got.IsZero())
+	})
+
+	t.Run("time.Time is normalized to UTC", func(t *testing.T) {
+		t.Parallel()
+		got, err := parseExpiresAt(when.In(time.FixedZone("x", 3600)))
+		require.NoError(t, err)
+		assert.Equal(t, when, got)
+	})
+
+	t.Run("RFC3339 string", func(t *testing.T) {
+		t.Parallel()
+		got, err := parseExpiresAt(when.Format(time.RFC3339))
+		require.NoError(t, err)
+		assert.Equal(t, when, got)
+	})
+
+	t.Run("non-RFC3339 string errors", func(t *testing.T) {
+		t.Parallel()
+		_, err := parseExpiresAt("not-a-date")
+		require.Error(t, err)
+	})
+
+	t.Run("wrong type errors", func(t *testing.T) {
+		t.Parallel()
+		_, err := parseExpiresAt(true)
+		require.Error(t, err)
+	})
 }
 
 func TestProvider_Float64(t *testing.T) {

@@ -70,6 +70,7 @@ var reservedTokenClaims = map[string]struct{}{
 type ConfigProvider interface {
 	String(ctx context.Context, key talosconfig.Key) string
 	Strings(ctx context.Context, key talosconfig.Key) []string
+	ActiveRetiredValues(ctx context.Context, key talosconfig.Key) ([]string, error)
 	Duration(ctx context.Context, key talosconfig.Key) time.Duration
 	Int(ctx context.Context, key talosconfig.Key) int
 	Bool(ctx context.Context, key talosconfig.Key) bool

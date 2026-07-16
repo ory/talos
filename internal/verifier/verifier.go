@@ -73,6 +73,7 @@ func clientIPSourceFromString(s string) int32 {
 type ConfigProvider interface {
 	String(ctx context.Context, key talosconfig.Key) string
 	Strings(ctx context.Context, key talosconfig.Key) []string
+	ActiveRetiredValues(ctx context.Context, key talosconfig.Key) ([]string, error)
 	Duration(ctx context.Context, key talosconfig.Key) time.Duration
 	Bool(ctx context.Context, key talosconfig.Key) bool
 }
@@ -315,11 +316,14 @@ func (v *Verifier) GetTokenIssuer(ctx context.Context) string {
 }
 
 // getTokenIssuers returns all allowed issuers for verification: [current, ...retired].
-func (v *Verifier) getTokenIssuers(ctx context.Context) []string {
-	return append(
-		[]string{v.GetTokenIssuer(ctx)},
-		v.provider.Strings(ctx, talosconfig.KeyCredentialsIssuerRetired)...,
-	)
+// Retired issuers whose expiry has passed are dropped so a forgotten retired issuer
+// cannot be used forever.
+func (v *Verifier) getTokenIssuers(ctx context.Context) ([]string, error) {
+	retired, err := v.provider.ActiveRetiredValues(ctx, talosconfig.KeyCredentialsIssuerRetired)
+	if err != nil {
+		return nil, err
+	}
+	return append([]string{v.GetTokenIssuer(ctx)}, retired...), nil
 }
 
 // getMacaroonPrefixes returns all allowed macaroon prefixes (current + retired).
@@ -711,8 +715,13 @@ func (v *Verifier) verifyDerivedJWT(ctx context.Context, tokenString string) (_ 
 	// configured clock skew as acceptable leeway so minor clock drift between nodes
 	// does not cause spurious "not yet valid" rejections.
 
+	issuers, err := v.getTokenIssuers(ctx)
+	if err != nil {
+		return nil, errdef.ErrServiceUnavailable().WithReasonf("get token issuers").WithWrap(errors.WithStack(err))
+	}
+
 	// Verify the token signature and claims using shared verifier
-	claims, err := v.verifier.VerifyJWT(ctx, tokenString, v.getTokenIssuers(ctx), v.clockSkew(ctx))
+	claims, err := v.verifier.VerifyJWT(ctx, tokenString, issuers, v.clockSkew(ctx))
 	if err != nil {
 		return nil, errdef.ErrSignatureInvalid().WithWrap(err)
 	}
@@ -749,8 +758,13 @@ func (v *Verifier) verifyDerivedMacaroon(ctx context.Context, tokenString string
 		return nil, errdef.ErrServiceUnavailable().WithReasonf("get HMAC secrets").WithWrap(errors.WithStack(err))
 	}
 
+	issuers, err := v.getTokenIssuers(ctx)
+	if err != nil {
+		return nil, errdef.ErrServiceUnavailable().WithReasonf("get token issuers").WithWrap(errors.WithStack(err))
+	}
+
 	// Verify the token signature and claims using shared verifier
-	claims, err := v.verifier.VerifyMacaroon(ctx, tokenString, hmacSecrets, v.getTokenIssuers(ctx), v.getMacaroonPrefixes(ctx), v.clockSkew(ctx))
+	claims, err := v.verifier.VerifyMacaroon(ctx, tokenString, hmacSecrets, issuers, v.getMacaroonPrefixes(ctx), v.clockSkew(ctx))
 	if err != nil {
 		return nil, errdef.ErrSignatureInvalid().WithWrap(err)
 	}

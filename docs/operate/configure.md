@@ -75,8 +75,10 @@ db:
   dsn: "sqlite://./data/talos.db"
 ```
 
-Schema validation rejects any `secrets.hmac.current` or `secrets.hmac.retired[]` value shorter than
-32 characters (`minLength: 32`). Generate one with:
+Schema validation rejects any `secrets.hmac.current` or `secrets.hmac.retired[].value` shorter than
+32 characters (`minLength: 32`). Each `secrets.hmac.retired` entry is a `{ value, expires_at }`
+object; `expires_at` is an optional RFC 3339 UTC timestamp after which the entry is dropped from
+verification. Generate a secret with:
 
 ```bash
 openssl rand -base64 48 | tr -d '\n+/=' | cut -c1-64
@@ -139,9 +141,10 @@ rate_limit: # Commercial only — OSS exposes the field but does not enforce it
   backend: redis # "memory" for single-pod, "redis" for multi-pod
 
 secrets:
-  # secrets.hmac.current and every secrets.hmac.retired[] entry must be at least
+  # secrets.hmac.current and every secrets.hmac.retired[].value must be at least
   # 32 characters (schema minLength: 32). Use 64 random characters for new
-  # deployments.
+  # deployments. Each retired entry is a { value, expires_at } object; the
+  # optional expires_at drops the entry from verification once it passes.
   hmac:
     current: "change-me-64-chars-of-base64ish-randomness-do-not-reuse-elsewhere"
 

@@ -187,10 +187,32 @@
         },
         "issuer_retired": {
           "type": "array",
-          "description": "Retired issuer URLs accepted during token verification. Tokens signed with these issuers remain valid but new tokens use the current issuer.",
+          "description": "Retired issuer URLs accepted during token verification. Tokens signed with these issuers remain valid but new tokens use the current issuer. Each entry may carry an optional expires_at timestamp; once it passes, the entry is dropped and no longer accepted. Entries without expires_at never expire. A bare string is accepted as shorthand for an entry that never expires.",
           "items": {
-            "type": "string",
-            "minLength": 1
+            "oneOf": [
+              {
+                "type": "string",
+                "description": "The retired issuer URL.",
+                "minLength": 1
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "string",
+                    "description": "The retired issuer URL.",
+                    "minLength": 1
+                  },
+                  "expires_at": {
+                    "type": "string",
+                    "description": "Optional RFC 3339 UTC timestamp after which this retired issuer is no longer accepted. Omit to never expire.",
+                    "format": "date-time"
+                  }
+                },
+                "required": ["value"],
+                "additionalProperties": false
+              }
+            ]
           },
           "default": []
         },
@@ -652,10 +674,32 @@
             },
             "retired": {
               "type": "array",
-              "description": "Retired HMAC secrets that remain valid for verification during rotation",
+              "description": "Retired HMAC secrets that remain valid for verification during rotation. Each entry may carry an optional expires_at timestamp; once it passes, the entry is dropped and no longer accepted. Entries without expires_at never expire. A bare string is accepted as shorthand for an entry that never expires.",
               "items": {
-                "type": "string",
-                "minLength": 32
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "description": "The retired HMAC secret. Must be at least 32 characters.",
+                    "minLength": 32
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "The retired HMAC secret. Must be at least 32 characters.",
+                        "minLength": 32
+                      },
+                      "expires_at": {
+                        "type": "string",
+                        "description": "Optional RFC 3339 UTC timestamp after which this retired secret is no longer accepted. Omit to never expire.",
+                        "format": "date-time"
+                      }
+                    },
+                    "required": ["value"],
+                    "additionalProperties": false
+                  }
+                ]
               },
               "default": []
             }

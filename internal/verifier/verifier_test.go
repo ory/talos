@@ -1951,12 +1951,391 @@ func TestVerifyAPIKey_HMACRotation(t *testing.T) {
 	// Configure verifier: new secret is current, old secret is retired.
 	require.NoError(t, env.provider.Set(ctx, config.KeyCredentialsAPIKeysPrefixCurrent, "talos"))
 	require.NoError(t, env.provider.Set(ctx, config.KeySecretsHMACCurrent, newSecret))
-	require.NoError(t, env.provider.Set(ctx, config.KeySecretsHMACRetired, []string{oldSecret}))
+	require.NoError(t, env.provider.Set(ctx, config.KeySecretsHMACRetired, []map[string]any{{"value": oldSecret}}))
 
 	// Key signed with the old secret must still verify.
 	result, _, err := env.verifier.VerifyAPIKey(ctx, fullKey)
 	require.NoError(t, err, "key signed with retired HMAC secret must still verify")
 	assert.Equal(t, keyID, result.KeyID)
+}
+
+// TestVerifyAPIKey_HMACRotation_LegacyBareString mirrors TestVerifyAPIKey_HMACRotation
+// but stores the retired HMAC secret in the legacy bare-string form persisted before
+// retired values gained expiry (issue 12213). Contrast the object shape
+// []map[string]any{{"value": oldSecret}} used above. A key signed with a secret that
+// now lives on disk as a bare string must still verify through the full chain,
+// proving the verification path — not just the parser — honors pre-expiry data.
+func TestVerifyAPIKey_HMACRotation_LegacyBareString(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	const (
+		oldSecret = "old-hmac-secret-must-be-32-chars!!"
+		newSecret = "new-hmac-secret-must-be-32-chars!!"
+	)
+
+	env := newTestVerifier(ctx, t)
+
+	// Generate key with the OLD secret.
+	fullKey, keyID, err := crypto.GenerateAPIKey(ctx, "talos", []byte(oldSecret))
+	require.NoError(t, err)
+	_, err = env.driver.CreateIssuedAPIKey(ctx, persistencetypes.CreateIssuedAPIKeyParams{
+		KeyID:       keyID,
+		Name:        "rotation-legacy-barestring-key",
+		TokenPrefix: "talos",
+		ActorID:     "owner-rotation",
+		Scopes:      scopesToJSON([]string{"read"}),
+		Metadata:    json.RawMessage(`{}`),
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, env.provider.Set(ctx, config.KeyCredentialsAPIKeysPrefixCurrent, "talos"))
+	require.NoError(t, env.provider.Set(ctx, config.KeySecretsHMACCurrent, newSecret))
+	// Legacy bare-string retired secret (no {"value": ...} wrapper).
+	require.NoError(t, env.provider.Set(ctx, config.KeySecretsHMACRetired, []any{oldSecret}))
+
+	result, _, err := env.verifier.VerifyAPIKey(ctx, fullKey)
+	require.NoError(t, err, "key signed with a legacy bare-string retired HMAC secret must still verify")
+	assert.Equal(t, keyID, result.KeyID)
+}
+
+// TestVerifyDerivedJWT_RetiredIssuerLegacyBareString mirrors the retired-issuer JWT
+// path (see TestVerifyDerivedJWT_RetiredIssuerExpiry) but configures the retired
+// issuer in the legacy bare-string form. A JWT minted under an issuer that now lives
+// on disk as a bare string must still verify, proving getTokenIssuers honors
+// pre-expiry retired-issuer data (issue 12213 backward compat).
+func TestVerifyDerivedJWT_RetiredIssuerLegacyBareString(t *testing.T) {
+	t.Parallel()
+
+	const (
+		retiredIssuer = "https://retired-issuer.example.com"
+		parentKeyID   = "d4d4d4d4-d4d4-d4d4-d4d4-d4d4d4d4d4d4"
+	)
+
+	ctx := t.Context()
+	v, driver, privateKey, signingKeyID := newRetiredIssuerVerifierWithRetired(ctx, t, []any{retiredIssuer})
+	mustCreateDerivedParentKey(ctx, t, driver, parentKeyID, "owner-retired-jwt-legacy")
+
+	now := time.Now().UTC()
+	claims := token.NewClaims()
+	claims.SetTokenID("jwt-retired-issuer-legacy")
+	claims.SetSubject(parentKeyID)
+	claims.SetIssuer(retiredIssuer)
+	claims.SetIssuedAt(now)
+	claims.SetExpiration(now.Add(time.Hour))
+	claims.SetNotBefore(now)
+	claims.SetTokenType(token.TokenTypeDerived)
+	claims.SetKeyID(parentKeyID)
+	claims.SetParentID(parentKeyID)
+	claims.SetActorID("owner-retired-jwt-legacy")
+	claims.SetNetworkID(contextx.NetworkIDFromContext(ctx).String())
+	claims.SetScopes([]string{"read"})
+	claims.SetMetadata(map[string]any{})
+
+	signer, err := token.NewJWTSigner(privateKey, signingKeyID)
+	require.NoError(t, err)
+	jwtToken, err := signer.Sign(ctx, claims)
+	require.NoError(t, err)
+
+	result, _, err := v.VerifyAPIKey(ctx, jwtToken)
+	require.NoError(t, err, "JWT under a legacy bare-string retired issuer must verify")
+	assert.Equal(t, parentKeyID, result.KeyID)
+}
+
+// TestVerifyAPIKey_HMACRetiredExpiry verifies that a retired HMAC secret is honored
+// only while its expiry is unset or still in the future. Once the expiry passes, a
+// key signed with the retired secret no longer verifies.
+func TestVerifyAPIKey_HMACRetiredExpiry(t *testing.T) {
+	t.Parallel()
+
+	const (
+		oldSecret = "old-hmac-secret-must-be-32-chars!!"
+		newSecret = "new-hmac-secret-must-be-32-chars!!"
+	)
+
+	for _, tc := range []struct {
+		name       string
+		expiresAt  string // RFC3339, empty means no expires_at field
+		wantVerify bool
+	}{
+		{name: "future expiry retained", expiresAt: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), wantVerify: true},
+		{name: "past expiry dropped", expiresAt: time.Now().UTC().Add(-time.Hour).Format(time.RFC3339), wantVerify: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			env := newTestVerifier(ctx, t)
+
+			fullKey, keyID, err := crypto.GenerateAPIKey(ctx, "talos", []byte(oldSecret))
+			require.NoError(t, err)
+			_, err = env.driver.CreateIssuedAPIKey(ctx, persistencetypes.CreateIssuedAPIKeyParams{
+				KeyID:       keyID,
+				Name:        "rotation-expiry-test-key",
+				TokenPrefix: "talos",
+				ActorID:     "owner-rotation",
+				Scopes:      scopesToJSON([]string{"read"}),
+				Metadata:    json.RawMessage(`{}`),
+			})
+			require.NoError(t, err)
+
+			require.NoError(t, env.provider.Set(ctx, config.KeyCredentialsAPIKeysPrefixCurrent, "talos"))
+			require.NoError(t, env.provider.Set(ctx, config.KeySecretsHMACCurrent, newSecret))
+			require.NoError(t, env.provider.Set(ctx, config.KeySecretsHMACRetired, []map[string]any{
+				{"value": oldSecret, "expires_at": tc.expiresAt},
+			}))
+
+			result, _, err := env.verifier.VerifyAPIKey(ctx, fullKey)
+			if tc.wantVerify {
+				require.NoError(t, err, "key signed with unexpired retired secret must verify")
+				assert.Equal(t, keyID, result.KeyID)
+			} else {
+				require.Error(t, err, "key signed with expired retired secret must not verify")
+			}
+		})
+	}
+}
+
+// mustCreateDerivedParentKey creates the parent API key a derived token points at.
+func mustCreateDerivedParentKey(ctx context.Context, t *testing.T, driver *sqlite.Driver, keyID, actorID string) {
+	t.Helper()
+	_, err := driver.CreateIssuedAPIKey(ctx, persistencetypes.CreateIssuedAPIKeyParams{
+		KeyID:       keyID,
+		Name:        "retired-issuer-parent",
+		TokenPrefix: "talos",
+		ActorID:     actorID,
+		Scopes:      scopesToJSON([]string{"read"}),
+		Metadata:    json.RawMessage(`{}`),
+	})
+	require.NoError(t, err)
+}
+
+// newRetiredIssuerJWTVerifier builds a verifier whose current issuer is
+// "talos-service" and whose retired-issuer list contains retiredIssuer with the
+// given expiry. It returns the verifier and the signing material so the caller
+// can mint a JWT under the retired issuer.
+func newRetiredIssuerVerifier(ctx context.Context, t *testing.T, retiredIssuer, expiresAt string) (*Verifier, *sqlite.Driver, ed25519.PrivateKey, string) {
+	t.Helper()
+	return newRetiredIssuerVerifierWithRetired(ctx, t, []map[string]any{
+		{"value": retiredIssuer, "expires_at": expiresAt},
+	})
+}
+
+// newRetiredIssuerVerifierWithRetired builds the same verifier as
+// newRetiredIssuerVerifier but takes the raw retired-issuer config payload, so a
+// caller can supply either the object shape ([]map[string]any{{"value": ...}}) or
+// the legacy bare-string shape ([]any{"issuer"}). The current issuer stays
+// "talos-service"; tokens are minted under a different, retired issuer so
+// verification depends entirely on the retired-issuer list.
+func newRetiredIssuerVerifierWithRetired(ctx context.Context, t *testing.T, retired any) (*Verifier, *sqlite.Driver, ed25519.PrivateKey, string) {
+	t.Helper()
+
+	keyService, privateKey, signingKeyID := newDeterministicEdDSAKeyService(t)
+
+	driver, err := testutil.InitDriver(t, "")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = driver.Close() })
+
+	provider := newVerifierTestProvider(t, "test-secret-123-must-be-32chars!")
+	require.NoError(t, provider.Set(ctx, config.KeyCredentialsDerivedTokensJWTSigningKeysURLs, []string{
+		testutil.TestSigningKeyJWKSURLWithKey(t, privateKey, signingKeyID),
+	}))
+	require.NoError(t, provider.Set(ctx, config.KeyCredentialsIssuerRetired, retired))
+
+	tracker := lastused.New(ctx, driver, lastused.Config{
+		QueueSize: 100, FlushSize: 100, FlushInterval: time.Hour, NumWorkers: 1,
+	})
+	t.Cleanup(tracker.Close)
+
+	v := NewFromProvider(driver, provider, newNoopCache(), testutil.NewMockEmitter(), keyService, metrics.New(prometheus.NewRegistry()), tracker)
+	return v, driver, privateKey, signingKeyID
+}
+
+// TestVerifyDerivedJWT_RetiredIssuerExpiry verifies that a JWT signed under a
+// retired issuer is honored only while that issuer's expiry is unset or still in
+// the future. This is the derived-token mirror of TestVerifyAPIKey_HMACRetiredExpiry
+// for the retired-issuer half of getTokenIssuers.
+func TestVerifyDerivedJWT_RetiredIssuerExpiry(t *testing.T) {
+	t.Parallel()
+
+	const (
+		retiredIssuer = "https://retired-issuer.example.com"
+		parentKeyID   = "a1a1a1a1-a1a1-a1a1-a1a1-a1a1a1a1a1a1"
+	)
+
+	for _, tc := range []struct {
+		name       string
+		expiresAt  string
+		wantVerify bool
+	}{
+		{name: "future expiry retained", expiresAt: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), wantVerify: true},
+		{name: "past expiry dropped", expiresAt: time.Now().UTC().Add(-time.Hour).Format(time.RFC3339), wantVerify: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			v, driver, privateKey, signingKeyID := newRetiredIssuerVerifier(ctx, t, retiredIssuer, tc.expiresAt)
+			mustCreateDerivedParentKey(ctx, t, driver, parentKeyID, "owner-retired-jwt")
+
+			now := time.Now().UTC()
+			claims := token.NewClaims()
+			claims.SetTokenID("jwt-retired-issuer")
+			claims.SetSubject(parentKeyID)
+			claims.SetIssuer(retiredIssuer)
+			claims.SetIssuedAt(now)
+			claims.SetExpiration(now.Add(time.Hour))
+			claims.SetNotBefore(now)
+			claims.SetTokenType(token.TokenTypeDerived)
+			claims.SetKeyID(parentKeyID)
+			claims.SetParentID(parentKeyID)
+			claims.SetActorID("owner-retired-jwt")
+			claims.SetNetworkID(contextx.NetworkIDFromContext(ctx).String())
+			claims.SetScopes([]string{"read"})
+			claims.SetMetadata(map[string]any{})
+
+			signer, err := token.NewJWTSigner(privateKey, signingKeyID)
+			require.NoError(t, err)
+			jwtToken, err := signer.Sign(ctx, claims)
+			require.NoError(t, err)
+
+			result, _, err := v.VerifyAPIKey(ctx, jwtToken)
+			if tc.wantVerify {
+				require.NoError(t, err, "JWT under an unexpired retired issuer must verify")
+				assert.Equal(t, parentKeyID, result.KeyID)
+			} else {
+				require.Error(t, err, "JWT under an expired retired issuer must not verify")
+			}
+		})
+	}
+}
+
+// TestVerifyDerivedMacaroon_RetiredIssuerExpiry mirrors the JWT case on the
+// macaroon derived-token path.
+func TestVerifyDerivedMacaroon_RetiredIssuerExpiry(t *testing.T) {
+	t.Parallel()
+
+	const (
+		retiredIssuer = "https://retired-issuer.example.com"
+		hmacSecret    = "test-secret-123-must-be-32chars!"
+		parentKeyID   = "b2b2b2b2-b2b2-b2b2-b2b2-b2b2b2b2b2b2"
+	)
+
+	for _, tc := range []struct {
+		name       string
+		expiresAt  string
+		wantVerify bool
+	}{
+		{name: "future expiry retained", expiresAt: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), wantVerify: true},
+		{name: "past expiry dropped", expiresAt: time.Now().UTC().Add(-time.Hour).Format(time.RFC3339), wantVerify: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			v, driver, _, _ := newRetiredIssuerVerifier(ctx, t, retiredIssuer, tc.expiresAt)
+			mustCreateDerivedParentKey(ctx, t, driver, parentKeyID, "owner-retired-mac")
+
+			macSigner, err := token.NewMacaroonSigner([]byte(hmacSecret), retiredIssuer, "mc")
+			require.NoError(t, err)
+
+			now := time.Now().UTC()
+			claims := token.NewClaims()
+			claims.SetTokenID("mac-retired-issuer")
+			claims.SetSubject(parentKeyID)
+			claims.SetIssuer(retiredIssuer)
+			claims.SetIssuedAt(now)
+			claims.SetExpiration(now.Add(time.Hour))
+			claims.SetNotBefore(now)
+			claims.SetTokenType(token.TokenTypeDerived)
+			claims.SetKeyID(parentKeyID)
+			claims.SetParentID(parentKeyID)
+			claims.SetActorID("owner-retired-mac")
+			claims.SetNetworkID(contextx.NetworkIDFromContext(ctx).String())
+			claims.SetScopes([]string{"read"})
+			claims.SetMetadata(map[string]any{})
+
+			macTok, err := macSigner.Sign(ctx, claims)
+			require.NoError(t, err)
+
+			result, _, err := v.VerifyAPIKey(ctx, macTok)
+			if tc.wantVerify {
+				require.NoError(t, err, "macaroon under an unexpired retired issuer must verify")
+				assert.Equal(t, parentKeyID, result.KeyID)
+			} else {
+				require.Error(t, err, "macaroon under an expired retired issuer must not verify")
+			}
+		})
+	}
+}
+
+// issuerLookupErrProvider embeds a real provider but forces ActiveRetiredValues to
+// fail, simulating the whole-key config unmarshal failure that
+// FilterActiveRetiredValues surfaces (see config.TestFilterActiveRetiredValues_WholeKeyUnmarshalFails).
+// The schema's oneOf constraint makes that failure unreachable from a validated
+// config, so the embedded provider supplies every other real value while this one
+// failure mode is injected.
+type issuerLookupErrProvider struct {
+	*config.Provider
+}
+
+func (issuerLookupErrProvider) ActiveRetiredValues(context.Context, config.Key) ([]string, error) {
+	return nil, errors.New("simulated retired-issuer unmarshal failure")
+}
+
+// TestVerifyDerivedJWT_IssuerLookupFailsClosed verifies that when the retired-issuer
+// lookup fails, the derived-token path maps it to ErrServiceUnavailable rather than
+// silently accepting or generically rejecting the token.
+func TestVerifyDerivedJWT_IssuerLookupFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	keyService, privateKey, signingKeyID := newDeterministicEdDSAKeyService(t)
+
+	driver, err := testutil.InitDriver(t, "")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = driver.Close() })
+
+	base := newVerifierTestProvider(t, "test-secret-123-must-be-32chars!")
+	require.NoError(t, base.Set(ctx, config.KeyCredentialsDerivedTokensJWTSigningKeysURLs, []string{
+		testutil.TestSigningKeyJWKSURLWithKey(t, privateKey, signingKeyID),
+	}))
+
+	tracker := lastused.New(ctx, driver, lastused.Config{
+		QueueSize: 100, FlushSize: 100, FlushInterval: time.Hour, NumWorkers: 1,
+	})
+	t.Cleanup(tracker.Close)
+
+	v := NewFromProvider(driver, issuerLookupErrProvider{Provider: base}, newNoopCache(), testutil.NewMockEmitter(), keyService, metrics.New(prometheus.NewRegistry()), tracker)
+
+	const parentKeyID = "c3c3c3c3-c3c3-c3c3-c3c3-c3c3c3c3c3c3"
+	mustCreateDerivedParentKey(ctx, t, driver, parentKeyID, "owner-fail-closed")
+
+	now := time.Now().UTC()
+	claims := token.NewClaims()
+	claims.SetTokenID("jwt-issuer-lookup-fail")
+	claims.SetSubject(parentKeyID)
+	claims.SetIssuer("talos-service")
+	claims.SetIssuedAt(now)
+	claims.SetExpiration(now.Add(time.Hour))
+	claims.SetNotBefore(now)
+	claims.SetTokenType(token.TokenTypeDerived)
+	claims.SetKeyID(parentKeyID)
+	claims.SetParentID(parentKeyID)
+	claims.SetActorID("owner-fail-closed")
+	claims.SetNetworkID(contextx.NetworkIDFromContext(ctx).String())
+	claims.SetScopes([]string{"read"})
+	claims.SetMetadata(map[string]any{})
+
+	signer, err := token.NewJWTSigner(privateKey, signingKeyID)
+	require.NoError(t, err)
+	jwtToken, err := signer.Sign(ctx, claims)
+	require.NoError(t, err)
+
+	_, _, err = v.VerifyAPIKey(ctx, jwtToken)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, errdef.ErrServiceUnavailable()), "issuer lookup failure must map to ErrServiceUnavailable, got %v", err)
 }
 
 // TestVerifyAPIKey_PrefixRotation verifies that a key with a retired prefix still verifies

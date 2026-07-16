@@ -24,6 +24,7 @@ type Schema struct {
 	Items       *Schema           `json:"items"`
 	Default     any               `json:"default"`
 	Enum        []any             `json:"enum"`
+	OneOf       []Schema          `json:"oneOf"`
 	Minimum     *float64          `json:"minimum"`
 	Maximum     *float64          `json:"maximum"`
 	MinLength   *int              `json:"minLength"`
@@ -197,9 +198,27 @@ func formatType(s Schema) string {
 		return strings.Join(vals, ", ")
 	}
 	if t == "array" && s.Items != nil {
-		return s.Items.Type + "[]"
+		return itemType(*s.Items) + "[]"
 	}
 	return t
+}
+
+// itemType names an array's element type. When the element is a oneOf (e.g. a
+// bare string or an object form), it reports the most descriptive object variant
+// so the reference reads "object[]" rather than an empty "[]".
+func itemType(item Schema) string {
+	if item.Type != "" {
+		return item.Type
+	}
+	for _, variant := range item.OneOf {
+		if variant.Type == typeObject {
+			return typeObject
+		}
+	}
+	if len(item.OneOf) > 0 {
+		return item.OneOf[0].Type
+	}
+	return ""
 }
 
 func formatDefault(def any) string {

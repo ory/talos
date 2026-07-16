@@ -335,6 +335,10 @@ func (p *tenantSigningURLProvider) Unmarshal(_ context.Context, _ talosconfig.Ke
 	return nil
 }
 
+func (p *tenantSigningURLProvider) ActiveRetiredValues(_ context.Context, _ talosconfig.Key) ([]string, error) {
+	return nil, nil
+}
+
 func (p *tenantSigningURLProvider) UnderlyingProvider(_ context.Context) *configx.Provider {
 	return nil
 }

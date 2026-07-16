@@ -20,18 +20,24 @@ const paginationKeyDomain = "talos/pagination/v1/cursor-key"
 type ConfigProvider interface {
 	String(ctx context.Context, key talosconfig.Key) string
 	Strings(ctx context.Context, key talosconfig.Key) []string
+	ActiveRetiredValues(ctx context.Context, key talosconfig.Key) ([]string, error)
 }
 
 // HMACSecretsForVerification returns all HMAC secrets (current + retired) for verification.
 // Returns an error if the project has no HMAC key configured.
 // Returns: [current, ...retired] so that keys signed with a retired secret still verify.
+// Retired secrets whose expiry has passed are dropped so a forgotten retired secret
+// cannot be used forever.
 func HMACSecretsForVerification(ctx context.Context, provider ConfigProvider) ([]string, error) {
 	current := provider.String(ctx, talosconfig.KeySecretsHMACCurrent)
 	if current == "" {
 		return nil, errors.New("project has no HMAC key configured")
 	}
 
-	retired := provider.Strings(ctx, talosconfig.KeySecretsHMACRetired)
+	retired, err := provider.ActiveRetiredValues(ctx, talosconfig.KeySecretsHMACRetired)
+	if err != nil {
+		return nil, err
+	}
 	return slices.Concat([]string{current}, retired), nil
 }
 

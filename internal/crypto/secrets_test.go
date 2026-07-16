@@ -3,6 +3,7 @@ package crypto_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -23,7 +24,35 @@ func TestHMACSecretsForVerification(t *testing.T) {
 			"secrets": map[string]any{
 				"hmac": map[string]any{
 					"current": "hmac-secret-32chars-minimum-12345678901234",
-					"retired": []string{"old-hmac-secret-32chars-1234567890123456"},
+					"retired": []map[string]any{
+						{"value": "old-hmac-secret-32chars-1234567890123456"},
+					},
+				},
+			},
+		}))
+		ctx := context.Background()
+
+		secrets, err := crypto.HMACSecretsForVerification(ctx, provider)
+		require.NoError(t, err)
+		assert.Equal(t, []string{
+			"hmac-secret-32chars-minimum-12345678901234",
+			"old-hmac-secret-32chars-1234567890123456",
+		}, secrets)
+	})
+
+	t.Run("legacy bare-string retired secret is accepted", func(t *testing.T) {
+		t.Parallel()
+
+		// Config written before retired values gained expiry stored retired HMAC
+		// secrets as bare strings, not the {"value": ...} object shape. Those
+		// bytes are still on disk and must decode to a never-expiring secret that
+		// is offered for verification. This is the crypto-layer backward-compat
+		// contract for the JSON DB change in issue 12213.
+		provider := testutil.NewTestProvider(t, configx.WithValues(map[string]any{
+			"secrets": map[string]any{
+				"hmac": map[string]any{
+					"current": "hmac-secret-32chars-minimum-12345678901234",
+					"retired": []any{"old-hmac-secret-32chars-1234567890123456"},
 				},
 			},
 		}))
@@ -44,7 +73,7 @@ func TestHMACSecretsForVerification(t *testing.T) {
 			"secrets": map[string]any{
 				"hmac": map[string]any{
 					"current": "hmac-secret-32chars-minimum-12345678901234",
-					"retired": []string{},
+					"retired": []map[string]any{},
 				},
 			},
 		}))
@@ -54,6 +83,59 @@ func TestHMACSecretsForVerification(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, []string{
 			"hmac-secret-32chars-minimum-12345678901234",
+		}, secrets)
+	})
+
+	t.Run("retired secret with future expiry is retained", func(t *testing.T) {
+		t.Parallel()
+
+		provider := testutil.NewTestProvider(t, configx.WithValues(map[string]any{
+			"secrets": map[string]any{
+				"hmac": map[string]any{
+					"current": "hmac-secret-32chars-minimum-12345678901234",
+					"retired": []map[string]any{
+						{
+							"value":      "old-hmac-secret-32chars-1234567890123456",
+							"expires_at": time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+						},
+					},
+				},
+			},
+		}))
+		ctx := context.Background()
+
+		secrets, err := crypto.HMACSecretsForVerification(ctx, provider)
+		require.NoError(t, err)
+		assert.Equal(t, []string{
+			"hmac-secret-32chars-minimum-12345678901234",
+			"old-hmac-secret-32chars-1234567890123456",
+		}, secrets)
+	})
+
+	t.Run("retired secret with past expiry is dropped", func(t *testing.T) {
+		t.Parallel()
+
+		provider := testutil.NewTestProvider(t, configx.WithValues(map[string]any{
+			"secrets": map[string]any{
+				"hmac": map[string]any{
+					"current": "hmac-secret-32chars-minimum-12345678901234",
+					"retired": []map[string]any{
+						{
+							"value":      "expired-hmac-secret-32chars-123456789012",
+							"expires_at": time.Now().UTC().Add(-time.Hour).Format(time.RFC3339),
+						},
+						{"value": "kept-hmac-secret-32chars-12345678901234567"},
+					},
+				},
+			},
+		}))
+		ctx := context.Background()
+
+		secrets, err := crypto.HMACSecretsForVerification(ctx, provider)
+		require.NoError(t, err)
+		assert.Equal(t, []string{
+			"hmac-secret-32chars-minimum-12345678901234",
+			"kept-hmac-secret-32chars-12345678901234567",
 		}, secrets)
 	})
 

@@ -41,7 +41,107 @@ type ProviderInterface interface {
 	Get(ctx context.Context, key Key) any
 	Set(ctx context.Context, key Key, value any) error
 	Unmarshal(ctx context.Context, key Key, value any) error
+	ActiveRetiredValues(ctx context.Context, key Key) ([]string, error)
 	UnderlyingProvider(ctx context.Context) *configx.Provider
+}
+
+// retiredUnmarshaler is the minimal capability FilterActiveRetiredValues needs.
+// Both the OSS Provider and the commercial provider satisfy it.
+type retiredUnmarshaler interface {
+	Unmarshal(ctx context.Context, key Key, value any) error
+}
+
+// FilterActiveRetiredValues unmarshals the retired-value array at key and returns
+// the values whose expiry is unset or still in the future, dropping any entry
+// whose expires_at has already passed. It keeps the expiry filter in one place so
+// the OSS and commercial providers behave identically.
+//
+// Each element may be either the current object form ({value, expires_at}) or
+// the legacy bare-string form (shorthand for an entry that never expires). The
+// array is decoded into []any because configx unmarshals through
+// koanf/mapstructure, which cannot decode a bare string into a struct; the loose
+// decode normalizes both shapes per element.
+//
+// A malformed individual entry is logged and skipped rather than failing the
+// whole call: one bad retired value must not break verification for the valid
+// current credential. Only a whole-key unmarshal failure returns an error.
+func FilterActiveRetiredValues(ctx context.Context, p retiredUnmarshaler, key Key) ([]string, error) {
+	var raw []any
+	if err := p.Unmarshal(ctx, key, &raw); err != nil {
+		return nil, errors.Wrapf(err, "unmarshal retired values for key %q", key.String())
+	}
+
+	now := time.Now().UTC()
+	active := make([]string, 0, len(raw))
+	for i, entry := range raw {
+		value, expiresAt, err := parseRetiredValue(entry)
+		if err != nil {
+			// A single malformed entry must not take down verification for the
+			// valid current credential and its well-formed siblings. Skipping a
+			// malformed retired entry is fail-safe: the stale credential it would
+			// have described is simply not honored. The whole-key unmarshal
+			// failure above still fails closed.
+			slog.Default().WarnContext(
+				ctx, "skipping malformed retired value",
+				slog.String("key", key.String()),
+				slog.Int("index", i),
+				slog.String("error", err.Error()),
+			)
+			continue
+		}
+		if value == "" {
+			continue
+		}
+		if isActiveAt(now, expiresAt) {
+			active = append(active, value)
+		}
+	}
+	return active, nil
+}
+
+// isActiveAt reports whether a retired value with the given expiry is still
+// active at now. A zero expiry never expires. The boundary is exclusive: an
+// entry whose expires_at equals now is already expired.
+func isActiveAt(now, expiresAt time.Time) bool {
+	return expiresAt.IsZero() || now.Before(expiresAt)
+}
+
+// parseRetiredValue normalizes one retired-value entry from its loosely-typed
+// config representation. It accepts a bare string (never expires) or an object
+// carrying "value" and an optional RFC 3339 "expires_at".
+func parseRetiredValue(entry any) (value string, expiresAt time.Time, err error) {
+	switch e := entry.(type) {
+	case string:
+		return e, time.Time{}, nil
+	case map[string]any:
+		v, _ := e["value"].(string)
+		expiresAt, err = parseExpiresAt(e["expires_at"])
+		return v, expiresAt, err
+	default:
+		return "", time.Time{}, errors.Errorf("unexpected retired value type %T", entry)
+	}
+}
+
+// parseExpiresAt reads an optional expires_at from a config value. A missing or
+// empty value means the entry never expires.
+func parseExpiresAt(v any) (time.Time, error) {
+	switch t := v.(type) {
+	case nil:
+		return time.Time{}, nil
+	case time.Time:
+		return t.UTC(), nil
+	case string:
+		if t == "" {
+			return time.Time{}, nil
+		}
+		parsed, err := time.Parse(time.RFC3339, t)
+		if err != nil {
+			return time.Time{}, errors.Wrapf(err, "parse expires_at %q", t)
+		}
+		return parsed.UTC(), nil
+	default:
+		return time.Time{}, errors.Errorf("unexpected expires_at type %T", v)
+	}
 }
 
 // Provider wraps the ory/x/configx provider for configuration access with hot reloading.
@@ -169,6 +269,12 @@ func (p *Provider) Set(_ context.Context, key Key, value any) error {
 // Unmarshal decodes the config value into the provided struct.
 func (p *Provider) Unmarshal(_ context.Context, key Key, value any) error {
 	return p.Provider.Unmarshal(key.String(), value)
+}
+
+// ActiveRetiredValues returns the retired values at key whose expiry is unset or
+// still in the future. See FilterActiveRetiredValues.
+func (p *Provider) ActiveRetiredValues(ctx context.Context, key Key) ([]string, error) {
+	return FilterActiveRetiredValues(ctx, p, key)
 }
 
 // UnderlyingProvider returns the wrapped configx.Provider for direct access.

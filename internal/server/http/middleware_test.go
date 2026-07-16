@@ -66,6 +66,10 @@ func (m *mockProvider) Unmarshal(_ context.Context, _ talosconfig.Key, _ any) er
 	return nil
 }
 
+func (m *mockProvider) ActiveRetiredValues(_ context.Context, _ talosconfig.Key) ([]string, error) {
+	return nil, nil
+}
+
 func (m *mockProvider) UnderlyingProvider(_ context.Context) *configx.Provider {
 	return nil
 }

@@ -95,7 +95,7 @@ Credential configuration for API keys and derived tokens (JWT, macaroon).
 | `credentials.derived_tokens.macaroon.prefix.current` | string   | `mc`     | `TALOS_CREDENTIALS_DERIVED_TOKENS_MACAROON_PREFIX_CURRENT` | Current prefix used for new macaroon token generation.                                                                              |
 | `credentials.derived_tokens.macaroon.prefix.retired` | string[] | `[]`     | `TALOS_CREDENTIALS_DERIVED_TOKENS_MACAROON_PREFIX_RETIRED` | Retired prefixes accepted during macaroon verification for rotation purposes.                                                       |
 | `credentials.issuer`                                 | string   | —        | `TALOS_CREDENTIALS_ISSUER`                                 | Token issuer (iss claim) for derived tokens. (min 1 chars)                                                                          |
-| `credentials.issuer_retired`                         | string[] | `[]`     | `TALOS_CREDENTIALS_ISSUER_RETIRED`                         | Retired issuer URLs accepted during token verification.                                                                             |
+| `credentials.issuer_retired`                         | object[] | `[]`     | `TALOS_CREDENTIALS_ISSUER_RETIRED`                         | Retired issuer URLs accepted during token verification.                                                                             |
 
 ## `db` (restart required)
 
@@ -158,7 +158,7 @@ Centralized secrets management.
 | Key                    | Type     | Default | Env Var                      | Description                                                                          |
 | ---------------------- | -------- | ------- | ---------------------------- | ------------------------------------------------------------------------------------ |
 | `secrets.hmac.current` | string   | —       | `TALOS_SECRETS_HMAC_CURRENT` | Current HMAC secret for new key generation and checksum verification. (min 32 chars) |
-| `secrets.hmac.retired` | string[] | `[]`    | `TALOS_SECRETS_HMAC_RETIRED` | Retired HMAC secrets that remain valid for verification during rotation              |
+| `secrets.hmac.retired` | object[] | `[]`    | `TALOS_SECRETS_HMAC_RETIRED` | Retired HMAC secrets that remain valid for verification during rotation.             |
 
 ## `serve`
 

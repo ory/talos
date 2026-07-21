@@ -55,9 +55,9 @@ once. Verification falls back through `secrets.hmac.retired` for both purposes.
 ## Pagination-token secret
 
 The list endpoints (`AdminListIssuedApiKeys` and `AdminListImportedApiKeys`) return an opaque
-`next_page_token` that encrypts the cursor (last item ID and network ID) with NaCl secretbox. Talos
-derives the encryption key from `secrets.hmac.current` using the same domain-separated HMAC-SHA256
-construction as the macaroon root key:
+`next_page_token` that encrypts the cursor (last item ID and network ID) with XChaCha20-Poly1305.
+Talos derives the encryption key from `secrets.hmac.current` using the same domain-separated
+HMAC-SHA256 construction as the macaroon root key:
 
 ```text
 pagination_cursor_key = HMAC-SHA256(secrets.hmac.current, "talos/pagination/v1/cursor-key")

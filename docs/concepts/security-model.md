@@ -6,14 +6,14 @@ description:
 
 ## Cryptographic primitives
 
-| Purpose                      | Algorithm                                                                                              | Keyed by                                                   |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------- |
-| API key checksum             | HMAC-SHA256 (full 32-byte digest, base58-encoded)                                                      | `secrets.hmac.current`                                     |
-| Imported key hashing         | SHA-512/256 over `nid \|\| 0x00 \|\| raw_key`                                                          | Tenant `nid` (no shared secret)                            |
-| Macaroon root-key derivation | HMAC-SHA256 with domain `"talos/macaroon/v1/root-key"`                                                 | `secrets.hmac.current`                                     |
-| Macaroon caveat binding      | HMAC-SHA256 (libmacaroons V2)                                                                          | Derived macaroon root key                                  |
-| JWT signing                  | EdDSA (Ed25519) or RS256, inferred from JWKS key type                                                  | JWKS at `credentials.derived_tokens.jwt.signing_keys.urls` |
-| Pagination-token encryption  | NaCl secretbox (XSalsa20-Poly1305) keyed by HMAC-SHA256 with domain `"talos/pagination/v1/cursor-key"` | `secrets.hmac.current`                                     |
+| Purpose                      | Algorithm                                                                              | Keyed by                                                   |
+| ---------------------------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| API key checksum             | HMAC-SHA256 (full 32-byte digest, base58-encoded)                                      | `secrets.hmac.current`                                     |
+| Imported key hashing         | SHA-512/256 over `nid \|\| 0x00 \|\| raw_key`                                          | Tenant `nid` (no shared secret)                            |
+| Macaroon root-key derivation | HMAC-SHA256 with domain `"talos/macaroon/v1/root-key"`                                 | `secrets.hmac.current`                                     |
+| Macaroon caveat binding      | HMAC-SHA256 (libmacaroons V2)                                                          | Derived macaroon root key                                  |
+| JWT signing                  | EdDSA (Ed25519) or RS256, inferred from JWKS key type                                  | JWKS at `credentials.derived_tokens.jwt.signing_keys.urls` |
+| Pagination-token encryption  | XChaCha20-Poly1305 keyed by HMAC-SHA256 with domain `"talos/pagination/v1/cursor-key"` | `secrets.hmac.current`                                     |
 
 `secrets.hmac.current` seeds the API key checksum, the macaroon root key, and the pagination cursor
 key (each via domain-separated derivation). Rotating it rotates all three at once; verification

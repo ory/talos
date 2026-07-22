@@ -22,6 +22,7 @@ import (
 	"github.com/ory/x/cmdx"
 
 	client "github.com/ory/talos/internal/client/generated"
+	"github.com/ory/talos/internal/testutil"
 )
 
 // testContext provides access to a running test server and CLI execution helpers.
@@ -301,7 +302,7 @@ log:
 func waitForServer(t *testing.T, endpoint string) {
 	t.Helper()
 
-	httpClient := &http.Client{Timeout: 500 * time.Millisecond}
+	httpClient := &http.Client{Timeout: 500 * time.Millisecond, Transport: testutil.NewTestTransport(t)}
 	deadline := time.Now().Add(15 * time.Second)
 
 	for time.Now().Before(deadline) {

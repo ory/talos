@@ -44,13 +44,15 @@ func TestCreateMetricsHTTPServer(t *testing.T) {
 	ts := httptest.NewServer(srv.Handler)
 	t.Cleanup(ts.Close)
 
+	hc := testutil.NewTestHTTPClient(t)
+
 	// get sends a GET request, reads the body fully, closes it, and returns the
 	// status code along with the body bytes.
 	get := func(t *testing.T, path string) (int, []byte) {
 		t.Helper()
 		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+path, nil)
 		require.NoError(t, err)
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := hc.Do(req)
 		require.NoError(t, err)
 		defer func() { _ = resp.Body.Close() }()
 		body, err := io.ReadAll(resp.Body)
@@ -133,13 +135,15 @@ func TestRunServersWithErrGroup(t *testing.T) {
 		errCh := make(chan error, 1)
 		go func() { errCh <- runServersWithErrGroup(ctx, deps, httpServer, metricsServer) }()
 
+		hc := testutil.NewTestHTTPClient(t)
+
 		// probe issues a GET and returns true if the server responded 200.
 		probe := func(url string) bool {
 			req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 			if err != nil {
 				return false
 			}
-			resp, err := http.DefaultClient.Do(req)
+			resp, err := hc.Do(req)
 			if err != nil {
 				return false
 			}
@@ -312,7 +316,7 @@ func TestCreateHTTPServerWithMiddleware(t *testing.T) {
 
 		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+"/health/alive", nil)
 		require.NoError(t, err)
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := testutil.NewTestHTTPClient(t).Do(req)
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = resp.Body.Close() })
 		assert.Equal(t, http.StatusOK, resp.StatusCode)

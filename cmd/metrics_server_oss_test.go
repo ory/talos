@@ -14,6 +14,7 @@ import (
 	"github.com/ory/herodot"
 
 	"github.com/ory/talos/internal/health"
+	"github.com/ory/talos/internal/testutil"
 )
 
 // TestOSSMetricsServerHasNoMetricsRoute verifies that the metrics HTTP server
@@ -33,7 +34,7 @@ func TestOSSMetricsServerHasNoMetricsRoute(t *testing.T) {
 
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+"/metrics", nil)
 	require.NoError(t, err)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := testutil.NewTestHTTPClient(t).Do(req)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = resp.Body.Close() })
 	_, _ = io.Copy(io.Discard, resp.Body)

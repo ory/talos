@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/cockroachdb/errors"
@@ -50,6 +51,10 @@ func initializeServerDependencies(ctx context.Context, provider talosconfig.Prov
 		slog.String("log_level", logLevel),
 		slog.String("log_format", logFormat),
 	)
+
+	// Warn once at startup if any JWT signing-key source is fetched over
+	// plaintext HTTP, before any other subsystem starts.
+	warnInsecureSigningKeyURLs(log, provider.Strings(ctx, talosconfig.KeyCredentialsDerivedTokensJWTSigningKeysURLs))
 
 	// Track cleanup functions
 	var cleanups []func()
@@ -166,6 +171,31 @@ func initializeServerDependencies(ctx context.Context, provider talosconfig.Prov
 		PropOpts:      propOpts,
 		Mode:          mode,
 	}, cleanup, nil
+}
+
+// warnInsecureSigningKeyURLs emits a single startup warning when any configured
+// JWT signing-key source uses a plaintext http:// scheme. Such sources are
+// vulnerable to man-in-the-middle tampering of the JWKS used to sign derived
+// tokens, so HTTPS, file, or base64 sources are strongly preferred. Only the URL
+// scheme is inspected; URL values, credentials, query strings, and key material
+// are never logged.
+func warnInsecureSigningKeyURLs(log *logger.Logger, urls []string) {
+	var insecure []int
+	for i, u := range urls {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(u)), "http://") {
+			insecure = append(insecure, i)
+		}
+	}
+	if len(insecure) == 0 {
+		return
+	}
+
+	log.Warn(
+		"Insecure JWT signing-key source: one or more configured URLs use a plaintext http:// scheme, which is vulnerable to man-in-the-middle tampering of the JWKS used to sign derived tokens. Use an https://, file://, or base64:// source instead.",
+		slog.String("config_key", talosconfig.KeyCredentialsDerivedTokensJWTSigningKeysURLs.String()),
+		slog.Int("insecure_count", len(insecure)),
+		slog.Any("insecure_indexes", insecure),
+	)
 }
 
 // initDatabaseFromProvider initializes database using driver factories

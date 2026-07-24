@@ -234,13 +234,49 @@ The Ory Talos documentation lives at [www.ory.com/docs/talos](https://www.ory.co
 
 ## Developing Ory Talos
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for information on:
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for the contribution process: how to open an issue, agree
+on an approach, and submit a pull request.
 
-- Contribution guidelines
-- Prerequisites and development setup
-- Running tests for OSS and commercial builds
-- Generating protobuf, SQL, and SDK artifacts
-- Building Docker images
+**Prerequisites**
+
+- Go 1.26 or later
+- Make
+- Git
+- Node.js 18+ (for documentation testing)
+
+**Getting started**
+
+```bash
+# Clone the repository
+git clone https://github.com/ory/talos.git
+cd talos
+
+# Install dependencies
+make deps
+
+# Build the binary
+make build
+
+# Run tests
+make test
+
+# Run full verification
+make verify
+```
+
+**Testing requirements**
+
+- Target ≥85% coverage (goal 90%).
+- Use table-driven tests with `t.Run()` subtests and `t.Parallel()` where safe.
+- Cover both happy and unhappy paths.
+- Keep documentation examples working. Run `make docs-test` to verify them.
+
+**Code guidelines**
+
+Follow the engineering rules in [AGENTS.md](./AGENTS.md), including dependency injection over global
+state, passing `context.Context` from the caller, structured JSON logging with `slog`, avoiding
+`COUNT(*)`, `SELECT *`, and `OFFSET`, and keeping commercial code under `commercial/` behind build
+tags.
 
 ## Security
 

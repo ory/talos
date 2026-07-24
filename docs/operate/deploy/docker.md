@@ -19,9 +19,9 @@ tested.
 docker run -d \
   -p 4420:4420 \
   -p 4422:4422 \
-  -e TALOS_SECRETS_HMAC_CURRENT="my-secret-must-be-at-least-32-characters-long" \
-  -e TALOS_CREDENTIALS_ISSUER="http://localhost:4420" \
-  -e TALOS_DB_DSN="sqlite:///var/lib/talos/talos.db" \
+  -e SECRETS_HMAC_CURRENT="my-secret-must-be-at-least-32-characters-long" \
+  -e CREDENTIALS_ISSUER="http://localhost:4420" \
+  -e DB_DSN="sqlite:///var/lib/talos/talos.db" \
   -v talos-data:/var/lib/talos \
   oryd/talos:<version-you-want> serve
 ```

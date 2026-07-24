@@ -4,8 +4,8 @@ description: Configuration reference for Ory Talos
 ---
 
 Configure Ory Talos through a YAML file passed with the `--config` flag. Override any setting with
-`TALOS_`-prefixed environment variables (for example, `TALOS_DB_DSN` overrides `db.dsn`). The
-`--config` flag is the only configuration-related CLI flag; per-key flags don't exist. See the
+environment variables (for example, `DB_DSN` overrides `db.dsn`). The `--config` flag is the only
+configuration-related CLI flag; per-key flags don't exist. See the
 [configuration reference](../reference/config.md) for every key, type, default, environment variable
 mapping, and the precedence rules.
 

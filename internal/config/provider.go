@@ -4,14 +4,13 @@
 // Configuration sources are loaded in the following priority order (lowest to highest):
 //  1. Default values (defined in this package)
 //  2. Configuration files (YAML)
-//  3. Unprefixed environment variables (DB_DSN, HTTP_ADDR, etc.)
-//  4. TALOS_ prefixed environment variables (TALOS_HTTP_ADDR, etc.)
+//  3. Environment variables (DB_DSN, SERVE_HTTP_PORT, etc.)
 //
-// Environment variables with underscores are converted to dot notation:
+// Environment variables are unprefixed; their underscores are converted to dot
+// notation and matched against config schema paths:
 //
 //	DB_DSN → db.dsn
-//	HTTP_ADDR → http.addr
-//	TALOS_HTTP_ADDR → http.addr (highest priority)
+//	SERVE_HTTP_PORT → serve.http.port
 package config
 
 import (
@@ -179,8 +178,7 @@ func NewProviderWithOptions(ctx context.Context, opts ...configx.OptionModifier)
 // Configuration sources are loaded in priority order:
 //  1. Schema defaults (defined in config.schema.json)
 //  2. Configuration file (if provided)
-//  3. Unprefixed environment variables (DB_DSN, etc.)
-//  4. TALOS_ prefixed environment variables (highest priority)
+//  3. Environment variables (unprefixed, e.g. DB_DSN — highest priority)
 //
 // The provider supports hot reloading when configuration files change.
 //

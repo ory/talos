@@ -77,15 +77,15 @@ func main() {
 func printEnvVarSection() {
 	fmt.Println(`## Environment variables
 
-Every configuration key can be set via an environment variable. Talos uses the ` + "`TALOS_`" + ` prefix and
-converts dot-separated config paths to uppercase with underscores:
+Every configuration key can be set via an environment variable. Talos converts dot-separated
+config paths to uppercase with underscores:
 
 ` + "```" + `
-TALOS_<SECTION>_<KEY>
+<SECTION>_<KEY>
 ` + "```" + `
 
 Replace dots (` + "`.`" + `) with underscores (` + "`_`" + `) and convert to uppercase. For example, ` + "`serve.http.port`" + `
-becomes ` + "`TALOS_SERVE_HTTP_PORT`" + `.
+becomes ` + "`SERVE_HTTP_PORT`" + `.
 
 ### Array values
 
@@ -94,11 +94,11 @@ variables:
 
 ` + "```bash" + `
 # Comma-separated
-export TALOS_SECRETS_HMAC_RETIRED="old-secret-1,old-secret-2"
+export SECRETS_HMAC_RETIRED="old-secret-1,old-secret-2"
 
 # Or indexed
-export TALOS_SECRETS_HMAC_RETIRED_0="old-secret-1"
-export TALOS_SECRETS_HMAC_RETIRED_1="old-secret-2"
+export SECRETS_HMAC_RETIRED_0="old-secret-1"
+export SECRETS_HMAC_RETIRED_1="old-secret-2"
 ` + "```" + `
 
 ### Precedence
@@ -117,8 +117,8 @@ At minimum, these must be set (via env var or config file):
 
 | Variable                         | Description                                       |
 | -------------------------------- | ------------------------------------------------- |
-| ` + "`TALOS_SECRETS_HMAC_CURRENT`" + `       | HMAC secret (also derives the pagination cursor key). Minimum 32 characters. |
-| ` + "`TALOS_CREDENTIALS_ISSUER`" + `        | Token issuer (` + "`iss`" + ` claim) for derived tokens.                              |`)
+| ` + "`SECRETS_HMAC_CURRENT`" + `       | HMAC secret (also derives the pagination cursor key). Minimum 32 characters. |
+| ` + "`CREDENTIALS_ISSUER`" + `        | Token issuer (` + "`iss`" + ` claim) for derived tokens.                              |`)
 }
 
 func printSection(prefix string, s Schema, depth int) {
@@ -305,7 +305,7 @@ func formatRequired(reqs []string) string {
 }
 
 func configKeyToEnvVar(key string) string {
-	return "TALOS_" + strings.ToUpper(strings.NewReplacer(".", "_").Replace(key))
+	return strings.ToUpper(strings.NewReplacer(".", "_").Replace(key))
 }
 
 func sortedKeys(m map[string]Schema) []string {

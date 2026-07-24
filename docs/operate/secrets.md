@@ -111,8 +111,8 @@ leave fewer than 64; the result always stays well above the 32-char minimum.
 ## Environment variables
 
 ```shell
-export TALOS_SECRETS_HMAC_CURRENT="64-char-hmac-secret-required-for-key-operations"
-export TALOS_SECRETS_HMAC_RETIRED='[{"value":"previous-hmac-secret-1"},{"value":"previous-hmac-secret-2","expires_at":"2026-06-01T00:00:00Z"}]'
+export SECRETS_HMAC_CURRENT="64-char-hmac-secret-required-for-key-operations"
+export SECRETS_HMAC_RETIRED='[{"value":"previous-hmac-secret-1"},{"value":"previous-hmac-secret-2","expires_at":"2026-06-01T00:00:00Z"}]'
 ```
 
 `secrets.hmac.retired` is an array of `{ value, expires_at }` objects, so set it from an environment
@@ -121,4 +121,4 @@ variable as a JSON array.
 Inject these from a secrets manager (HashiCorp Vault, AWS Secrets Manager, GCP Secret Manager, or
 Kubernetes `Secret`). Never check secrets into version control. See the
 [Configuration reference](../reference/config.md) for the complete env-var mapping rules
-(`TALOS_`-prefix precedence, underscore-to-dot conversion, and list parsing).
+(precedence, underscore-to-dot conversion, and list parsing).

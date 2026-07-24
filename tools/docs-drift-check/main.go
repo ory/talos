@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -49,11 +50,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	_, validEnvVars, err := loadConfigKeys(filepath.Join(root, "spec", "config.schema.json"))
+	configKeys, validEnvVars, err := loadConfigKeys(filepath.Join(root, "spec", "config.schema.json"))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading config schema: %v\n", err)
 		os.Exit(1)
 	}
+
+	envVarRes := buildEnvVarRegexps(configKeys)
 
 	var violations []violation
 
@@ -69,7 +72,7 @@ func main() {
 			return nil
 		}
 
-		fileViolations, scanErr := checkFile(path, endpoints, enums, validEnvVars)
+		fileViolations, scanErr := checkFile(path, endpoints, enums, validEnvVars, envVarRes)
 		if scanErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: error scanning %s: %v\n", path, scanErr)
 			return nil
@@ -140,7 +143,7 @@ func loadProtoEnums(path string) (map[string]bool, error) {
 }
 
 // loadConfigKeys recursively extracts all dotted property paths from the JSON Schema
-// and builds a set of valid TALOS_ environment variable names from those paths.
+// and builds a set of valid environment variable names from those paths.
 func loadConfigKeys(path string) (map[string]bool, map[string]bool, error) {
 	// #nosec G304 - Reading project source files is the intended functionality
 	data, err := os.ReadFile(path)
@@ -157,7 +160,7 @@ func loadConfigKeys(path string) (map[string]bool, map[string]bool, error) {
 	extractConfigKeys(schema, "", keys)
 
 	// Build valid env vars from config keys using the unambiguous forward mapping.
-	// Include all path prefixes so docs can reference parent sections (e.g. TALOS_DB).
+	// Include all path prefixes so docs can reference parent sections (e.g. DB).
 	validEnvVars := make(map[string]bool)
 	for key := range keys {
 		parts := strings.Split(key, ".")
@@ -187,7 +190,39 @@ func extractConfigKeys(obj map[string]any, prefix string, keys map[string]bool) 
 	}
 }
 
-func checkFile(path string, endpoints map[string]bool, enums map[string]bool, validEnvVars map[string]bool) ([]violation, error) {
+// envVarRegexps holds the scan patterns for config env vars in docs prose.
+type envVarRegexps struct {
+	// unprefixed matches candidate config env vars (e.g. SERVE_HTTP_PORT), anchored
+	// on the schema's top-level sections so unrelated ALL_CAPS identifiers don't match.
+	unprefixed *regexp.Regexp
+	// stalePrefix matches config env vars still carrying the legacy TALOS_ prefix,
+	// which the server never reads.
+	stalePrefix *regexp.Regexp
+}
+
+// buildEnvVarRegexps derives the scan patterns from the schema's top-level config
+// sections (e.g. SECRETS, SERVE, DB). Anchoring on real sections keeps the
+// unprefixed pattern from matching arbitrary uppercase identifiers like enum values.
+func buildEnvVarRegexps(configKeys map[string]bool) envVarRegexps {
+	var sections []string
+	for key := range configKeys {
+		if !strings.Contains(key, ".") {
+			sections = append(sections, regexp.QuoteMeta(strings.ToUpper(key)))
+		}
+	}
+	// Longest-first so alternation can't stop at a shorter section that prefixes a longer one.
+	sort.Slice(sections, func(i, j int) bool { return len(sections[i]) > len(sections[j]) })
+	alternation := strings.Join(sections, "|")
+
+	return envVarRegexps{
+		// Require at least 2 segments (e.g. SERVE_HTTP_PORT) and end on an alphanumeric
+		// to avoid matching partial env vars like FOO_ from FOO_0.
+		unprefixed:  regexp.MustCompile(`\b(?:` + alternation + `)(?:_[A-Z][A-Z0-9]*)+`),
+		stalePrefix: regexp.MustCompile(`TALOS_(?:` + alternation + `)(?:_[A-Z][A-Z0-9]*)*`),
+	}
+}
+
+func checkFile(path string, endpoints map[string]bool, enums map[string]bool, validEnvVars map[string]bool, envVarRes envVarRegexps) ([]violation, error) {
 	// #nosec G304 - Reading user-specified markdown files is the intended functionality
 	f, err := os.Open(path)
 	if err != nil {
@@ -203,9 +238,6 @@ func checkFile(path string, endpoints map[string]bool, enums map[string]bool, va
 	// Endpoint regex captures shell variables and path params in URL paths
 	endpointRe := regexp.MustCompile(`/v2alpha1/(?:admin/|api[Kk]eys)[$$\w/.{}\-:]+`)
 	enumRe := regexp.MustCompile(`\b(VERIFICATION_ERROR_\w+|BATCH_IMPORT_ERROR_\w+|REVOCATION_REASON_\w+|KEY_STATUS_\w+|TOKEN_ALGORITHM_\w+)\b`)
-	// Only match TALOS_ env vars that have at least 2 segments (e.g. TALOS_SERVE_HTTP_PORT).
-	// Require ending with an alphanumeric to avoid matching partial env vars like TALOS_FOO_ from TALOS_FOO_0.
-	configRe := regexp.MustCompile(`TALOS_[A-Z][A-Z0-9]*(?:_[A-Z][A-Z0-9]*)+`)
 
 	for scanner.Scan() {
 		lineNum++
@@ -255,8 +287,19 @@ func checkFile(path string, endpoints map[string]bool, enums map[string]bool, va
 			}
 		}
 
-		// Check config keys referenced with TALOS_ env prefix (at least 2 segments)
-		for _, m := range configRe.FindAllString(line, -1) {
+		// Config env vars still carrying the legacy TALOS_ prefix are never read by the server.
+		for _, m := range envVarRes.stalePrefix.FindAllString(line, -1) {
+			violations = append(violations, violation{
+				File:    path,
+				Line:    lineNum,
+				Kind:    "config",
+				Literal: m,
+				Message: "Talos reads unprefixed env vars; drop the TALOS_ prefix",
+			})
+		}
+
+		// Check config env vars (at least 2 segments, e.g. SERVE_HTTP_PORT)
+		for _, m := range envVarRes.unprefixed.FindAllString(line, -1) {
 			if !validEnvVars[m] {
 				violations = append(violations, violation{
 					File:    path,
@@ -299,10 +342,10 @@ func normalizeEndpoint(ep string) string {
 	return ep
 }
 
-// configKeyToEnvVar converts a dotted config key to its TALOS_ env var form.
-// Example: credentials.api_keys.default_ttl -> TALOS_CREDENTIALS_API_KEYS_DEFAULT_TTL
+// configKeyToEnvVar converts a dotted config key to its env var form.
+// Example: credentials.api_keys.default_ttl -> CREDENTIALS_API_KEYS_DEFAULT_TTL
 func configKeyToEnvVar(key string) string {
-	return "TALOS_" + strings.ToUpper(strings.ReplaceAll(key, ".", "_"))
+	return strings.ToUpper(strings.ReplaceAll(key, ".", "_"))
 }
 
 func findProjectRoot() (string, error) {

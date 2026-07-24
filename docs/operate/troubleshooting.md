@@ -92,7 +92,7 @@ log:
 Or via environment variable:
 
 ```shell
-export TALOS_LOG_LEVEL=debug
+export LOG_LEVEL=debug
 ```
 
 Ory Talos uses Go's `log/slog` and writes logs to stderr as JSON by default. There is no

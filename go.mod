@@ -306,7 +306,7 @@ require (
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/openzipkin/zipkin-go v0.4.3 // indirect
-	github.com/ory/pop/v6 v6.4.2-0.20260507161217-89126558d369 // indirect
+	github.com/ory/pop/v6 v6.4.2-0.20260714091811-7f2223c43ab6 // indirect
 	github.com/pelletier/go-toml v1.9.5 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
 	github.com/peterhellberg/link v1.2.0 // indirect

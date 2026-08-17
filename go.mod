@@ -10,14 +10,14 @@ godebug (
 replace github.com/ory/x => ./oryx
 
 require (
-	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.11-20260415201107-50325440f8f2.1
+	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260709200747-435963d16310.1
 	buf.build/go/protovalidate v1.2.0
 	github.com/XSAM/otelsql v0.41.0
 	github.com/bradleyjkemp/cupaloy/v2 v2.8.0
 	github.com/btcsuite/btcd/btcutil v1.1.6
 	github.com/cenkalti/backoff/v4 v4.3.0
 	github.com/cockroachdb/errors v1.12.0
-	github.com/dgraph-io/ristretto/v2 v2.4.0
+	github.com/dgraph-io/ristretto/v2 v2.4.2
 	github.com/go-faker/faker/v4 v4.7.0
 	github.com/gofrs/uuid v4.4.0+incompatible
 	github.com/golang-migrate/migrate/v4 v4.19.1
@@ -45,7 +45,7 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa
 	google.golang.org/grpc v1.82.1
-	google.golang.org/protobuf v1.36.11
+	google.golang.org/protobuf v1.36.12
 	gopkg.in/macaroon.v2 v2.1.0
 	modernc.org/sqlite v1.52.0
 )
